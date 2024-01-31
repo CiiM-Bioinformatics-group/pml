@@ -17,8 +17,8 @@ suppressPackageStartupMessages({
 
 set.seed(31415926)
 
-rm(list = ls()); gc()
-overwrite <- TRUE
+# rm(list = ls()); gc()
+overwrite <- FALSE
 proj_dir <- "~/Documents/projects/wp_pml"
 plot_dir <- file.path(proj_dir, "outputs/analysis/cell_cell_communication/plots")
 object_dir <- file.path(proj_dir, "outputs/analysis/cell_cell_communication/objects")
@@ -26,7 +26,7 @@ object_dir <- file.path(proj_dir, "outputs/analysis/cell_cell_communication/obje
 tar_cell_types <- c("Mono", "CD4 T", "CD8 T", "B", "NK", "DC")
 
 per_omics <- "pml_citeseq"
-# per_omics <- "pml_rnaseq"
+per_omics <- "pml_rnaseq"
 
 response <- "Responder"; timepoint <- "BL"
 # response <- "Responder"; timepoint <- "6W"
@@ -42,30 +42,41 @@ save_token <- paste("ccc", per_omics, response, timepoint, sep = ".")
 # CellChat DB of human
 cc_db.use <- CellChatDB.human %>% subsetDB(search = "Secreted Signaling")
 
-# Create CellChat object
-pbmc_int <- file.path(proj_dir, "outputs/analysis/integrated/objects", paste0(per_omics, ".rds")) %>% readRDS()
-tar_cells <- pbmc_int@meta.data %>%
-  dplyr::filter(Response == response, Timepoint == timepoint, predicted.celltype.l1 %in% tar_cell_types) %>%
-  rownames()
+# Save the CellChat object
+cc_obj_save_to <- file.path(object_dir, paste0(save_token, ".cellchat_obj.rds"))
+if (!file.exists(cc_obj_save_to) || overwrite) {
+  cat("[I]: Creating CellChat object ...\n")
+  # Create CellChat object
+  pbmc_int <- file.path(proj_dir, "outputs/analysis/integrated/objects", paste0(per_omics, ".rds")) %>% readRDS()
+  tar_cells <- pbmc_int@meta.data %>%
+    dplyr::filter(Response == response, Timepoint == timepoint, predicted.celltype.l1 %in% tar_cell_types) %>%
+    rownames()
 
-sub_pbmc <- pbmc_int[, tar_cells]
-data_input <- GetAssayData(sub_pbmc, assay = "SCT", slot = "data") # normalized data matrix
-meta_data <- sub_pbmc@meta.data %>%
-  dplyr::select(PatientID = Vireo_assignment, group = predicted.celltype.l1, response = Response, Timepoint = Timepoint)
+  sub_pbmc <- pbmc_int[, tar_cells]
+  data_input <- GetAssayData(sub_pbmc, assay = "SCT", slot = "data") # normalized data matrix
+  meta_data <- sub_pbmc@meta.data %>%
+    dplyr::select(PatientID = Vireo_assignment, group = predicted.celltype.l1, response = Response, Timepoint = Timepoint)
 
-cc_obj <- createCellChat(object = data_input, meta = meta_data, group.by = "group")
-cc_obj <- setIdent(cc_obj, ident.use = "group")
+  cc_obj <- createCellChat(object = data_input, meta = meta_data, group.by = "group")
+  cc_obj <- setIdent(cc_obj, ident.use = "group")
 
-# CellChat analysis
-cc_obj@DB <- cc_db.use
-cc_obj <- subsetData(cc_obj)
-cc_obj <- identifyOverExpressedGenes(cc_obj)
-cc_obj <- identifyOverExpressedInteractions(cc_obj)
-cc_obj <- computeCommunProb(cc_obj, population.size = TRUE)
-cc_obj <- filterCommunication(cc_obj, min.cells = 10)
-cc_obj <- computeCommunProbPathway(cc_obj)
-cc_obj <- aggregateNet(cc_obj)
-cc_obj <- netAnalysis_computeCentrality(cc_obj, slot.name = "netP")
+  # CellChat analysis
+  cc_obj@DB <- cc_db.use
+  cc_obj <- subsetData(cc_obj)
+  cc_obj <- identifyOverExpressedGenes(cc_obj)
+  cc_obj <- identifyOverExpressedInteractions(cc_obj)
+  cc_obj <- computeCommunProb(cc_obj, population.size = TRUE)
+  cc_obj <- filterCommunication(cc_obj, min.cells = 10)
+  cc_obj <- computeCommunProbPathway(cc_obj)
+  cc_obj <- aggregateNet(cc_obj)
+  cc_obj <- netAnalysis_computeCentrality(cc_obj, slot.name = "netP")
+
+  cat("[I]: Dumping into disk ...\n");
+  saveRDS(cc_obj, file = cc_obj_save_to)
+} else {
+  cat("[I]: Loading from disk ...\n");
+  cc_obj <- readRDS(cc_obj_save_to)
+}
 
 
 # Visualization
@@ -119,10 +130,16 @@ pdf(save_to, width = 4, height = 3)
 netAnalysis_signalingRole_scatter(cc_obj)
 dev.off()
 
-## Signaling contributions
-save_to <- file.path(plot_dir, paste0(save_token, ".signaling_contributions.heatmap.pdf"))
-pdf(save_to, width = 10, height = 5)
-netAnalysis_signalingRole_heatmap(cc_obj, pattern = "outgoing") + netAnalysis_signalingRole_heatmap(cc_obj, pattern = "incoming")
+## Outgoing signaling contributions
+save_to <- file.path(plot_dir, paste0(save_token, ".outgoing_signaling_contributions.heatmap.pdf"))
+pdf(save_to, width = 6, height = 4)
+netAnalysis_signalingRole_heatmap(cc_obj, pattern = "outgoing", width = 6, height = 4)
+dev.off()
+
+## Incoming signaling contributions
+save_to <- file.path(plot_dir, paste0(save_token, ".incoming_signaling_contributions.heatmap.pdf"))
+pdf(save_to, width = 6, height = 4)
+netAnalysis_signalingRole_heatmap(cc_obj, pattern = "incoming", width = 6, height = 4)
 dev.off()
 
 ## Estimate communication patterns
@@ -130,10 +147,3 @@ save_to <- file.path(plot_dir, paste0(save_token, ".nr_communication_patterns.pd
 pdf(save_to, width = 6, height = 3)
 selectK(cc_obj, pattern = "outgoing")
 dev.off()
-
-# Save the CellChat object
-save_to <- file.path(object_dir, paste0(save_token, ".cellchat_obj.rds"))
-if (!file.exists(save_to) || overwrite) {
-  cat("[I]: Dumping into disk ...\n");
-  saveRDS(cc_obj, file = save_to)
-}

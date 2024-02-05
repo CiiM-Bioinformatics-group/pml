@@ -5,7 +5,7 @@
 # Created: 2022 Mar 01
 # Updated: Jan 28, 2024
 
-import os, json, logging, argparse
+import os, json, logging, argparse, warnings
 from datetime import datetime as dt
 
 import matplotlib.pyplot as plt
@@ -32,11 +32,13 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.cluster import AffinityPropagation
 from sklearn.decomposition import PCA, IncrementalPCA
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.feature_selection import SelectFdr, f_classif
 from sklearn.metrics import precision_recall_curve, precision_score, accuracy_score, roc_auc_score, recall_score, roc_curve
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 # Global random state for reproducibility. Ajustable by CLI options -s/--random-seed.
@@ -659,7 +661,7 @@ def train(options, logman: LogManager = LogManager("Train")):
     x_tn, x_tt, y_tn, y_tt, cts_map = load_expression_matrix(in_file, test_ratio=test_ratio, index_col=bcode_col, cell_types=cell_types, keep_cell_type=keep_cell_type, nrows=n_rows)
 
     # A pipeline for scaling data, selecting features, classifying samples.
-    pipe_steps = [("encode", CategoryEncoder()), ("scale", StandardScaler()), ("select", SelectKBest(f_classif))]
+    pipe_steps = [("encode", CategoryEncoder()), ("scale", StandardScaler()), ("select", SelectFdr(f_classif, alpha=0.1))]
 
     if model_arch == "nn":
         pipe_steps.append(("classify", NNClassifier()))

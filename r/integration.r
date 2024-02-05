@@ -34,7 +34,7 @@ object_dir <- file.path(proj_dir, "outputs/analysis/integrated/objects")
 # TYROBP, (monocyte, NK cells), TRAC, (CD4+ T, CD8+ T), TMSB10, (CD4+ T, CD8+ T), CD3D, (CD4+ T, CD8+ T, Other T)
 # CD3G, (CD4+ T, CD8+ T), NKG7, (NK, Other T), CST7, (NK, Other T), CD74, (DC, B), HLA-DQA1, (B, DC)
 celltype_markers <- c(
-  "CTSS", "FCN1", "LYZ", "PSAP", "S100A9", "AIF1", "SERPINA1", "CD14", "FCGR3A", # "TYROBP", "NEAT1", "MNDA", Monocytes
+  "CTSS", "FCN1", "LYZ", "PSAP", "S100A9", "AIF1", "SERPINA1", "CD14", "FCGR3A", # "TYROBP", "NEAT1", "MNDA", Monocytes  "IL7R", "MAL", "LTB", "CD4", "LDHB", "CD3D", "CD3G", "TRAC", # "TMSB10", "TPT1", CD4+ T
   "IL7R", "MAL", "LTB", "CD4", "LDHB", "CD3D", "CD3G", "TRAC", # "TMSB10", "TPT1", CD4+ T
   "CD8B", "CD8A", "HCST", "LINC02446", "CTSW", "CD3E", # "TMSB10", "CD3G", "CD3D", "TRAC", CD8+ T
   "TRDC", "GZMK", "KLRB1", "TRGC2", "LYAR", "KLRG1", "GZMA", # "CD3D", "CST7", "NKG7", Other T
@@ -57,8 +57,8 @@ for (per_idents in c(paste0("celltype.", c("l1", "l2")))) {
 pml_omics_tab <- tibble::tribble(
   ~omics_type, ~norm_method, ~reduction_model, ~fpath,
   "pml_citeseq", "SCT", "wnn.umap", "CITE_seq/objects/integrated/pbmc.cite_seq.integrated.pca_umap_clustered.annotated.rds",
-  # "pml_multiome", "SCT", "umap", "Multiome/objects/integrated/pbmc.multiome.integrated.pca_umap_clustered.annotated.rds",
   "pml_rnaseq", "SCT", "umap", "RNA_seq/objects/integrated/pbmc.rna_seq.integrated.pca_umap_clustered.annotated.rds",
+  "pml_multiome", "SCT", "umap", "Multiome/objects/integrated/pbmc.multiome.integrated.pca_umap_clustered.annotated.rds",
   # "pml_atacseq", "SCT", "umap", "ATAC_seq/objects/integrated/pbmc.atac_seq.integrated.pca_umap_clustered.annotated.rds",
 )
 
@@ -70,8 +70,8 @@ selected_donors <- c(
 pbmc_list <- apply(pml_omics_tab, 1, function(vec, .pbmc_ref, .overwrite) {
   # vec <- c(omics_type = "pml_rnaseq", norm_method = "SCT", reduction_model = "umap", fpath = "RNA_seq/objects/integrated/pbmc.rna_seq.integrated.pca_umap_clustered.annotated.rds")
   fpath <- vec["fpath"]
-  red_model <- vec["reduction_model"]
   omics_type <- vec["omics_type"]
+  reduc_model <- vec["reduction_model"]
   norm_method <- vec["norm_method"]
 
   save_to <- file.path(object_dir, paste0(omics_type, ".rds"))
@@ -81,9 +81,10 @@ pbmc_list <- apply(pml_omics_tab, 1, function(vec, .pbmc_ref, .overwrite) {
     per_omics <- per_omics[, per_omics$Vireo_assignment %in% selected_donors]
     anchors <- FindTransferAnchors(.pbmc_ref, per_omics, normalization.method = norm_method, reference.reduction = "spca", dims = 1:50, verbose = FALSE)
     per_omics <- MapQuery(anchors, per_omics, .pbmc_ref, refdata = list(celltype.l1 = "celltype.l1", celltype.l2 = "celltype.l2"), reference.reduction = "spca", verbose = FALSE)
-    per_omics <- RunUMAP(per_omics, reduction = "ref.spca", dims = 1:30, verbose = FALSE)
+    per_omics <- RunUMAP(per_omics, reduction = "ref.spca", reduction.name = "ref.re.umap", dims = 1:30, verbose = FALSE)
     per_omics <- FindNeighbors(per_omics, reduction = "ref.spca", verbose = FALSE)
     per_omics <- FindClusters(per_omics, verbose = FALSE)
+    DefaultAssay(per_omics) <- "SCT"
     cat("[I]: Dumping into disk...", omics_type, "\n")
     saveRDS(per_omics, save_to)
   } else {
@@ -99,7 +100,7 @@ pbmc_list <- apply(pml_omics_tab, 1, function(vec, .pbmc_ref, .overwrite) {
     save_to <- file.path(plot_dir, paste0(omics_type, ".ref_umap.", per_idents, ".pdf"))
     ggsave(save_to, plot = p, width = plot_width, height = plot_height)
 
-    p <- DimPlot(per_omics, reduction = "umap", group.by = per_idents, label = TRUE, repel = TRUE, pt.size = 0.75)
+    p <- DimPlot(per_omics, reduction = reduc_model, group.by = per_idents, label = TRUE, repel = TRUE, pt.size = 0.75)
     save_to <- file.path(plot_dir, paste0(omics_type, ".umap.", per_idents, ".pdf"))
     ggsave(save_to, plot = p, width = plot_width, height = plot_height)
   }

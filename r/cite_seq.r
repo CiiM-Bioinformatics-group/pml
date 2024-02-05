@@ -19,10 +19,10 @@ suppressPackageStartupMessages({
 })
 
 
-projdir <- "~/Documents/projects/wp_pml"
-deg_dir <- file.path(projdir, "outputs/analysis/CITE_seq/deg")
-plot_dir <- file.path(projdir, "outputs/analysis/CITE_seq/plots")
-object_dir <- file.path(projdir, "outputs/analysis/CITE_seq/objects")
+proj_dir <- "~/Documents/projects/wp_pml"
+deg_dir <- file.path(proj_dir, "outputs/analysis/CITE_seq/deg")
+plot_dir <- file.path(proj_dir, "outputs/analysis/CITE_seq/plots")
+object_dir <- file.path(proj_dir, "outputs/analysis/CITE_seq/objects")
 
 
 # Cell type markers level 1 ()
@@ -44,7 +44,7 @@ celltype_markers <- c(
 #
 ## CITE-seq analysis
 #
-meta_data_path <- file.path(projdir, "misc/metadata/clinical_parameters.csv")
+meta_data_path <- file.path(proj_dir, "misc/metadata/clinical_parameters.csv")
 major_meta_tab <- fread(meta_data_path) %>%
   dplyr::select(Patient_ID, Age, Sex, BMI, Response) %>%
   dplyr::mutate(Patient_ID = stringr::str_remove(Patient_ID, "Cure-"))
@@ -69,8 +69,8 @@ other_meta_tab <- tibble::tribble(
 # Load data and basic QC
 selected_pools <- 1:4
 pools <- paste0("CITEpool", selected_pools) %>% purrr::set_names(.)
-bcmat_path <- file.path(projdir, "outputs/readcounts/CITE_seq", pools, "outs") %>% purrr::set_names(pools)
-dmres_path <- file.path(projdir, "outputs/demultiplex/CITE_seq", pools, "vireo_outdir_ref/donor_ids.tsv") %>% purrr::set_names(pools)
+bcmat_path <- file.path(proj_dir, "outputs/readcounts/CITE_seq", pools, "outs") %>% purrr::set_names(pools)
+dmres_path <- file.path(proj_dir, "outputs/demultiplex/CITE_seq", pools, "vireo_outdir_ref/donor_ids.tsv") %>% purrr::set_names(pools)
 
 pbmc_list <- lapply(pools, function(pn, .dmres_path, .bcmat_path, .overwrite) {
   pp <- file.path(.bcmat_path[[pn]], "filtered_feature_bc_matrix")
@@ -355,5 +355,5 @@ for (pct in tar_cell_types) {
   }, error = function(e) cat(e$message, "; ", paste(id_2, id_1, "failed, comparison 3\n")) )
 }
 
-save_to <- file.path(projdir, "outputs/analysis/CITE_seq/deg/pbmc.cite_seq.integrated.de_gene.csv")
+save_to <- file.path(proj_dir, "outputs/analysis/CITE_seq/deg/pbmc.cite_seq.integrated.de_gene.csv")
 fwrite(de_tab, save_to)

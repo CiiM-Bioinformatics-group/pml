@@ -21,14 +21,25 @@ suppressPackageStartupMessages({
   library(GOplot)
   library(enrichplot)
   library(ComplexHeatmap)
+  library(ggdendro)
 
   library(GOSemSim)
+  library(goProfiles)
 
   library(circlize)
+  library(patchwork)
 
   library(clusterProfiler)
   library(org.Hs.eg.db)
 })
+
+# Utility functions
+shrink_to_range <- function(x, t) {
+  min_val <- min(t)
+  max_val <- max(t)
+  scaled_x <- min_val + (x - min(x)) * (max_val - min_val) / (max(x) - min(x))
+  return(scaled_x)
+}
 
 
 #
@@ -304,61 +315,151 @@ for (pct in tar_cell_types) {
   save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, pct, "Rs_vs_NR.per_timepoint.venn_diagram.v2.pdf", sep = "."))
   p <- ggVennDiagram(venn_plot_list) + scale_fill_gradient(low = "white", high = "darkblue") + theme(legend.position = "none")
   ggsave(save_to, plot = p, width = 6, height = 6)
+
+  mat <- make_comb_mat(venn_plot_list)
+}
+
+# Overlaps of identified DEGs
+comb_mat <- de_fmt_tab %>%
+    dplyr::filter(timepoint == "BL") %>%
+    dplyr::select(gene_symbol, direction, celltype) %>%
+    dplyr::group_by(celltype, direction) %>%
+    dplyr::summarise(gene_sets =  list(gene_symbol)) %>%
+    dplyr::mutate(gene_set_name = paste0(stringr::str_remove_all(celltype, " "), " (", direction, ")")) %>%
+    dplyr::pull(gene_sets, gene_set_name) %>%
+    list_to_matrix() %>%
+    make_comb_mat()
+
+gene_upset_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, "all_celltype.Rs_vs_NR.BL.upset_plot.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
+pdf(gene_upset_save_to, width = 6.5, height = 3.25)
+UpSet(comb_mat,
+  top_annotation = upset_top_annotation(comb_mat, add_numbers = TRUE),
+  left_annotation = upset_left_annotation(comb_mat, add_numbers = TRUE),
+  bg_col = "#F0F0FF", bg_pt_col = "#CCCCFF") %>% draw()
+dev.off()
+
+
+# Volcano plot of DEGs of each cell type
+for (pct in tar_cell_types) {
+  de_tab_per_ct <- de_tab_all %>%
+    dplyr::filter(data_source == "pml_citeseq", celltype == pct, donors == "All") %>%
+    tidyr::separate(comparison, into = c("comparison", "timepoint"), sep = "_") %>%
+    dplyr::filter(timepoint %in% c("BL")) %>%
+    dplyr::select(p_val_adj, avg_log2FC, gene_symbol) %>%
+    dplyr::mutate(Signif. = dplyr::case_when(
+      p_val_adj < 0.05 & avg_log2FC < -0.25 ~ "Down",
+      p_val_adj < 0.05 & avg_log2FC > 0.25 ~ "Up",
+      TRUE ~ "Other"
+    ))
+
+  volp <- ggplot() +
+    geom_point(aes(x = avg_log2FC, y = -log10(p_val_adj), color = Signif.), de_tab_per_ct) +
+    geom_text_repel(aes(x = avg_log2FC, y = -log10(p_val_adj), label = gene_symbol), dplyr::slice_min(de_tab_per_ct, p_val_adj, n = 20), max.overlaps = Inf, min.segment.length = 0) +
+    geom_vline(xintercept = c(0.25, -0.25), linetype = "dotted") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dotted") +
+    labs(x = "Log2(fold-change)", y = "-log10(Adj. P value)") +
+    scale_color_manual(values = c(Up = "red", Down = "blue", Other = "grey")) +
+    theme_classic() +
+    theme(legend.position = "top")
+
+  volp_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, stringr::str_remove_all(pct, " "), "Rs_vs_NR.BL.volcano_plot.pdf", sep = "."))
+  ggsave(volp_save_to, plot = volp, width = 4, height = 5)
 }
 
 
-# Up regulated genes in monocytes and CD8+ T, two time points
-pct <- "CD4 T"
-pct <- "CD8 T"
-pct <- "Mono"
-
-for (pct in tar_cell_types) {
-  save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".", stringr::str_remove_all(pct, " "), ".Rs_vs_NR.go_enrichment.csv"))
-  if (!file.exists(save_to)) {
-    comb_mat <- de_fmt_tab %>%
-      dplyr::filter(celltype == pct, data_source == per_omics, p_val_adj < 0.05, abs(avg_log2FC) > 0.25) %>%
+# Gene ontology enrichment
+gotab_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".all_celltype.Rs_vs_NR.go_enrichment.csv"))
+if (file.exists(gotab_save_to)) {
+  go_tab <- fread(gotab_save_to)
+} else {
+  go_tab <- lapply(tar_cell_types, function(pct) {
+    gene_set_list <- de_fmt_tab %>%
+      dplyr::filter(celltype == pct, data_source == per_omics, p_val_adj < 0.05, abs(avg_log2FC) > 0.25, timepoint %in% c("BL", "3M")) %>%
       dplyr::select(gene_symbol, direction, timepoint) %>%
-      tidyr::pivot_wider(values_from = direction, names_from = timepoint) %>%
-      tidyr::pivot_longer(c(BL, `3M`)) %>%
-      dplyr::filter(!is.na(value)) %>%
-      (function(tab) {
-        list(
-          `BL (up)` = tab %>% dplyr::filter(value == "up", name == "BL") %>% dplyr::pull(gene_symbol),
-          `3M (up)` = tab %>% dplyr::filter(value == "up", name == "3M") %>% dplyr::pull(gene_symbol),
-          `BL (dw)` = tab %>% dplyr::filter(value == "dw", name == "BL") %>% dplyr::pull(gene_symbol),
-          `3M (dw)` = tab %>% dplyr::filter(value == "dw", name == "3M") %>% dplyr::pull(gene_symbol)
-        )}) %>%
-      list_to_matrix() %>%
-      make_comb_mat()
-
-    gene_set_list <- list(
-      `BL (up)` = lapply(c("1100", "1001", "1000"), extract_comb, m = comb_mat) %>% unlist(),
-      `3M (up)` = lapply(c("1100", "0110", "0100"), extract_comb, m = comb_mat) %>% unlist(),
-      `BL (dw)` = lapply(c("0110", "0011", "0010"), extract_comb, m = comb_mat) %>% unlist(),
-      `3M (dw)` = lapply(c("1001", "0111", "0001"), extract_comb, m = comb_mat) %>% unlist(),
-      `Shared` = lapply(c("1100"), extract_comb, m = comb_mat) %>% unlist(),
-      `3M (only)` = lapply(c("0100", "0110"), extract_comb, m = comb_mat) %>% unlist(),
-      `BL (only)` = lapply(c("1000", "1001"), extract_comb, m = comb_mat) %>% unlist()
-    )
+      dplyr::group_by(timepoint, direction) %>%
+      dplyr::summarise(gene_sets =  list(gene_symbol)) %>%
+      dplyr::mutate(gene_set_name = paste0(stringr::str_remove_all(timepoint, " "), " (", direction, ")")) %>%
+      dplyr::pull(gene_sets, gene_set_name)
 
     go_tab <- lapply(names(gene_set_list), function(x, .gsl) {
       gene_vec <- .gsl[[x]]
-      tmp <- enrichGO(
-        gene = gene_vec, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "ALL", pAdjustMethod = "BH", pvalueCutoff = 0.05,
-        qvalueCutoff = 0.05, readable = TRUE
-      )
-      tmp@result %>% dplyr::mutate(gene_set = x, label = paste0(x, " (n=", length(gene_vec), ")"))
+      enrichGO(gene = gene_vec, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "ALL", readable = TRUE)@result %>%
+        dplyr::mutate(gene_set = x, label = paste0(x, " (n=", length(gene_vec), ")"))
     }, .gsl = gene_set_list) %>%
       Reduce(rbind, .) %>%
       dplyr::mutate(bg_ratio_dec = lapply(.$BgRatio, function(x) eval(parse(text = x))) %>% unlist) %>%
       dplyr::mutate(gene_ratio_dec = lapply(.$GeneRatio, function(x) eval(parse(text = x))) %>% unlist) %>%
-      dplyr::mutate(log2_odds_ratio = log2(gene_ratio_dec / bg_ratio_dec))
+      dplyr::mutate(log2_odds_ratio = log2(gene_ratio_dec / bg_ratio_dec)) %>%
+      dplyr::mutate(celltype = pct)
+  }) %>%
+  Reduce(rbind, .)
 
-    fwrite(go_tab, save_to)
-  } else {
-    go_tab <- fread(save_to)
-  }
+  fwrite(go_tab, gotab_save_to)
+}
 
+
+# GO BP enrichment
+go_plot_tab <- go_tab %>%
+  dplyr::filter(ONTOLOGY %in% c("BP"), p.adjust < 0.05, gene_set %in% c("BL (dw)", "BL (up)")) %>%
+  dplyr::mutate(celltype = forcats::fct_relevel(celltype, c("CD8 T", "Mono", "CD4 T", "B", "NK"))) %>%
+  dplyr::mutate(gene_set = forcats::fct_relevel(gene_set, c("BL (up)", "BL (dw)"))) %>%
+  dplyr::arrange(celltype, desc(gene_set), Count) %>%
+  dplyr::mutate(ID = forcats::fct_inorder(ID)) %>%
+  dplyr::group_by(celltype, ID) %>%
+  dplyr::mutate(x_start = n() - dplyr::cur_group_id()) %>%
+  dplyr::ungroup()
+
+go_sim_mat <- go_plot_tab %>% dplyr::pull(ID) %>% as.character() %>% unique() %>%
+  mgoSim(GO1 = ., GO2 = ., semData = hsGO, measure = "Rel", combine = NULL)
+go_term_sim_order <- colnames(go_sim_mat)[hclust(dist(go_sim_mat))$order]
+go_sim_mat <- go_sim_mat %>% as.data.frame() %>%
+  dplyr::mutate(ID1 = rownames(.)) %>%
+  tidyr::pivot_longer(cols = -ID1, names_to = "ID2", values_to = "similarity") %>%
+  dplyr::mutate(similarity = dplyr::if_else(ID1 == ID2, 1.0, similarity)) %>%
+  dplyr::mutate(ID1 = factor(ID1, levels = go_term_sim_order)) %>%
+  dplyr::mutate(ID2 = factor(ID2, levels = go_term_sim_order))
+
+go_cnn_tab <- go_plot_tab %>%
+  dplyr::select(celltype, ID, x_start) %>%
+  dplyr::mutate(x_end = match(ID, go_term_sim_order)) %>%
+  dplyr::mutate(x_end = shrink_to_range(x_end, x_start)) %>%
+  tidyr::pivot_longer(cols = c(x_start, x_end), names_to = "x_position", values_to = "index") %>%
+  dplyr::mutate(celltype = forcats::fct_relevel(celltype, rev(c("CD8 T", "Mono", "CD4 T", "B", "NK")))) %>%
+  dplyr::mutate(x_position = factor(x_position, levels = c("x_start", "x_end"))) %>%
+  dplyr::mutate(y_groups = paste0(celltype, ", ", ID))
+
+go_enr_p <- ggplot(go_plot_tab) +
+  geom_tile(aes(x = gene_set, y = ID, fill = Count)) +
+  scale_fill_gradient(low = "gray", high = "darkblue", na.value = "gray") +
+  labs(x = NULL, y = NULL, fill = "Nr. of Genes") +
+  facet_grid(celltype ~ ., scales = "free_y", space = "free", switch = "y") +
+  theme_classic() +
+  theme(legend.position = "left", axis.ticks.y = element_blank(), axis.text.y = element_blank(), axis.text.x = element_text(angle = 90, vjust = 0.5, size = 12), strip.background = element_blank(), strip.placement = "outside", panel.spacing = unit(0.25, "mm"))
+
+go_sim_p <- ggplot(go_sim_mat) +
+  geom_tile(aes(x = ID1, y = ID2, fill = similarity)) +
+  scale_fill_gradient(low = "white", high = "darkred") +
+  labs(fill = "GO similarity", x = NULL, y = NULL) +
+  theme_classic() +
+  theme(legend.position = "left", axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_blank())
+
+go_cnn_p <- ggplot(go_cnn_tab) +
+  geom_path(aes(x = x_position, y = index, group = y_groups, color = celltype), linewidth = .05) +
+  labs(color = "Cell type") +
+  theme_void() +
+  scale_y_continuous(expand = c(0, 0))
+
+go_p <- go_enr_p + plot_spacer() + go_cnn_p + plot_spacer() + go_sim_p + plot_layout(widths = c(1, -.25, 1, -.25, 7), guides = "collect") & theme(plot.margin = unit(c(0.01, 0, 0.01, 0), "npc"))
+go_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".all_celltype.BP.go_enrichment.pdf"))
+ggsave(go_plot_save_to, go_p, width = 7, height = 5.5)
+
+
+
+
+
+
+# ----------------------------------------------------------
+for (pct in tar_cell_types) {
   # GO enrichment of BP, biological processes
   go_plot_tab <- go_tab %>%
     dplyr::filter(ONTOLOGY %in% c("BP"), p.adjust < 0.05, Count >= 5, gene_set %in% c("3M (dw)", "3M (up)", "BL (dw)", "BL (up)")) %>%

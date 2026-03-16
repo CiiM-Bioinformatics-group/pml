@@ -39,6 +39,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 # Global random state for reproducibility. Ajustable by CLI options -s/--random-seed.
@@ -241,7 +242,7 @@ class PredEnsembler:
 
     def report(self, pp=0.5, prefix="Report-", save_to="./"):
         # X-axis
-        x_set = np.arange(self._n_iters)
+        x_set = np.arange(len(self._alpha))
 
         fig = plt.figure(figsize=(11, 12), constrained_layout=True)
         spec = fig.add_gridspec(3, 2)
@@ -344,12 +345,16 @@ def setup(options):
     if seed is not None: RANDOM_STATE = np.random.RandomState(seed)
 
 
-def load_expression_matrix(fpath, as_train=True, min_pct=0.2, cell_types=None, keep_cell_type=True, test_ratio=None, features=None, ignore_cols=["ReSamplingIndex", "ClusterLabelPerGroup"], **kwarg):
+def load_expression_matrix(
+    fpath, as_train=True, min_pct=0.2, cell_types=None, keep_cell_type=True, test_ratio=None, features=None,
+    ignore_cols=["ReSamplingIndex", "ClusterLabelPerGroup"], **kwarg
+):
     """Load expression matrix."""
     ct_col, id_col, lb_col = "CellType", "SampleID", "SampleLabel"
     res_cols = [lb_col, id_col, ct_col]
 
     exp_tab: pd.DataFrame = pd.read_csv(fpath, header=0, **kwarg).drop(labels=ignore_cols, axis=1, errors="ignore")
+    exp_tab.index += exp_tab.groupby(level=0).cumcount().astype(str) # Make the index unique.
 
     # If there is a 'CellType' column, it allows the function to subset cell types for the downstream analysis.
     if ct_col in exp_tab.columns and cell_types:
@@ -372,7 +377,7 @@ def load_expression_matrix(fpath, as_train=True, min_pct=0.2, cell_types=None, k
     if id_col in exp_tab.columns:
         cts_map = exp_tab.loc[:, id_col]
         n_samples = cts_map.drop_duplicates().shape[0]
-        if n_samples <= 1: # One or empty.
+        if n_samples < 1: # One or empty.
             cts_map = None
 
     # Select a subset of features. The logics also deal with missing features in unseen data, i.e., data to be predicted.
@@ -456,7 +461,10 @@ def create_metacells(reduc_mtx, meta_mtx=None, group_by=[], barcode_col="CellBar
     return merged_mtx.groupby(group_by).apply(apply_clustering, non_pc_cols, max_iter=max_iter, random_state=random_state).drop("FakeGroup", axis=1, errors="ignore")
 
 
-def quantify_expression_by_resampling(expr_mtx, metacell_mtx, barcode_col="CellBarcodes", extra_group_by=[], n_samples=15, n_resamples=200, random_state=31415926):
+def quantify_expression_by_resampling(
+    expr_mtx, metacell_mtx, barcode_col="CellBarcodes", extra_group_by=[], n_samples=15, n_resamples=50,
+    random_state=31415926
+):
     if isinstance(random_state, int):
         random_state = np.random.RandomState(random_state)
     seed_pool = random_state.randint(3141592654, size=n_resamples)
@@ -529,7 +537,7 @@ def eval_model(xmat, y_true, model, pos_lab="Case", cts_map=None, save_to="./"):
 
     # Save the predicted results.
     pred_pc = xmat.assign(SampleID=cts_map, y_true=y_true, y_pred=y_pred, y_prob=y_prob)
-    pred_pc.to_csv(f"{save_to}/Prediction-percell.csv", index=False)
+    pred_pc.to_csv(f"{save_to}/Prediction-permetacell.csv", index=False)
 
     # Infer expected probability per sample.
     pred_ps = ensemble_probs(pred_pc, save_to)
@@ -603,12 +611,12 @@ def metacell(options, logman: LogManager = LogManager("Metacell")):
     # IO
     save_to = f"{proj_dir}/Metacells"
 
-    metacell_mtx_saveto = f"{save_to}/{out_prefix}.metacells_percell.csv"
+    metacell_mtx_saveto = f"{save_to}/{out_prefix}.metacells_permetacell.csv"
     avexp_mtx_saveto = f"{save_to}/{out_prefix}.expression_matrix_permetacell.csv"
     resam_mtx_saveto = f"{save_to}/{out_prefix}.resampling.csv"
     if not overwrite(force, metacell_mtx_saveto, avexp_mtx_saveto, resam_mtx_saveto):
-        logman.error("Output files already exist, use -p/--out-prefix to distinguish them or -f/--force to overwrite them.")
-        raise FileExistsError(f"Output files already exist: {metacell_mtx_saveto} or {avexp_mtx_saveto} or {resam_mtx_saveto}.")
+        logman.error("Output files exist, use -p/--out-prefix to distinguish them or -f/--force to overwrite them.")
+        raise FileExistsError(f"Output files exist: {metacell_mtx_saveto} or {avexp_mtx_saveto} or {resam_mtx_saveto}.")
 
     # Loading expression matrix and meta data (if any)
     expr_mtx = pd.read_csv(expr_mtx_path).head(n_rows) if n_rows else pd.read_csv(expr_mtx_path)
@@ -623,11 +631,16 @@ def metacell(options, logman: LogManager = LogManager("Metacell")):
         reduc_mtx = pd.read_csv(reduc_mtx_path)
 
     if n_rows is not None: reduc_mtx = reduc_mtx.head(n_rows)
-    metacell_mtx = create_metacells(reduc_mtx, meta_mtx, group_by=extra_group_by, barcode_col=barcode_col, max_iter=500, random_state=RANDOM_STATE).reset_index(drop=True)
+    metacell_mtx = create_metacells(
+        reduc_mtx, meta_mtx, group_by=extra_group_by, barcode_col=barcode_col, max_iter=500, random_state=RANDOM_STATE
+    ).reset_index(drop=True)
     if metacell_mtx is not None:
         metacell_mtx.to_csv(metacell_mtx_saveto, index=False)
 
-    avexp_mtx, resam_mtx = quantify_expression_by_resampling(expr_mtx, metacell_mtx, barcode_col=barcode_col, extra_group_by=extra_group_by, n_samples=n_samples, n_resamples=n_resamples, random_state=RANDOM_STATE)
+    avexp_mtx, resam_mtx = quantify_expression_by_resampling(
+        expr_mtx, metacell_mtx, barcode_col=barcode_col, extra_group_by=extra_group_by, n_samples=n_samples,
+        n_resamples=n_resamples, random_state=RANDOM_STATE
+    )
     avexp_mtx.to_csv(avexp_mtx_saveto, index=False)
     resam_mtx.to_csv(resam_mtx_saveto, index=False)
 
@@ -658,7 +671,10 @@ def train(options, logman: LogManager = LogManager("Train")):
     pos_lab, param_space = parse_config(options.config)
 
     # Load expression matrix
-    x_tn, x_tt, y_tn, y_tt, cts_map = load_expression_matrix(in_file, test_ratio=test_ratio, index_col=bcode_col, cell_types=cell_types, keep_cell_type=keep_cell_type, nrows=n_rows)
+    x_tn, x_tt, y_tn, y_tt, cts_map = load_expression_matrix(
+        in_file, test_ratio=test_ratio, index_col=bcode_col, cell_types=cell_types, keep_cell_type=keep_cell_type,
+        nrows=n_rows
+    )
 
     # A pipeline for scaling data, selecting features, classifying samples.
     pipe_steps = [("encode", CategoryEncoder()), ("scale", StandardScaler()), ("select", SelectFdr(f_classif, alpha=0.1))]
@@ -704,7 +720,9 @@ def explain(options, logman: LogManager = LogManager("Explain")):
 
     # Load model and expression matrix
     model = load_model(f"{proj_dir}/Train/Model.pickle")
-    xmat, _, _, _, _ = load_expression_matrix(in_file, as_train=False, index_col=barcode_col, cell_types=cell_types, nrows=n_rows)
+    xmat, _, _, _, _ = load_expression_matrix(
+        in_file, as_train=False, index_col=barcode_col, cell_types=cell_types, nrows=n_rows
+    )
     features = pd.read_csv(tar_features, header=0).loc[:, "Feature"].to_list()
     xmat = xmat.loc[:, features]
 
@@ -747,6 +765,7 @@ def predict(options, logman: LogManager = LogManager("Predict")):
     proj_dir = options.proj_dir
     n_iters = options.n_iters
     n_rows = options.n_rows
+    keep_expr = options.keep_expr
     out_subdir = options.out_subdir
 
     # Create sub-dir to store the predicted results.
@@ -762,7 +781,10 @@ def predict(options, logman: LogManager = LogManager("Predict")):
     # Load model and expression matrix
     model_path = f"{proj_dir}/Train/Model.pickle"
     model = load_model(model_path)
-    xmat, _, _, _, cts_map = load_expression_matrix(in_file, as_train=False, cell_types=cell_types, min_pct=0, features=features, index_col=barcode_col, nrows=n_rows, keep_cell_type=False)
+    xmat, _, _, _, cts_map = load_expression_matrix(
+        in_file, as_train=False, cell_types=cell_types, min_pct=0, features=features, index_col=barcode_col,
+        nrows=n_rows, keep_cell_type=False
+    )
 
     # Prediction
     y_pred = model.predict(xmat)
@@ -770,11 +792,18 @@ def predict(options, logman: LogManager = LogManager("Predict")):
 
     # Save predicted results
     pred_pc = xmat.assign(SampleID=cts_map, y_prob=y_prob, y_pred=y_pred)
-    pred_pc.to_csv(f"{out_subdir}/Prediction-percell.csv")
+    if not keep_expr:
+        pred_pc = pred_pc.loc[:, ["SampleID", "y_pred", "y_prob"]]
+    pred_pc.to_csv(f"{out_subdir}/Prediction-permetacell.csv")
 
     # Infer expected probability per sample
-    pred_ps = ensemble_probs(pred_pc, out_subdir, n_iters=n_iters)
-    pred_ps.to_csv(f"{out_subdir}/Prediction-persample.csv", index=False)
+    try:
+        pred_ps = ensemble_probs(pred_pc, out_subdir, n_iters=n_iters)
+        pred_ps.to_csv(f"{out_subdir}/Prediction-persample.csv", index=False)
+    except ZeroDivisionError as zde:
+        logman.critical(f"{zde}")
+    except Exception as e:
+        logman.critical(f"{e}")
 
     logman.info(f"Done! Check {out_subdir} for the results")
 
@@ -795,9 +824,10 @@ def get_cli_opts():
     psc_par.add_argument("-g", "--extra-group-by", default=None, nargs="*", help="Extra group by columns. Default: %(default)s")
     psc_par.add_argument("-f", "--force", action="store_true", help="Force to overwrite existing files.")
     psc_par.add_argument("-p", "--out-prefix", default="train", help="Prefix of the output files. Default: %(default)s")
-    psc_par.add_argument("--n-resamples", default=200, type=int, help="Number of re-samples. Default: %(default)s")
-    psc_par.add_argument("--n-samples", default=15, type=int, help="Number of samples. Default: %(default)s")
-    psc_par.add_argument("--n-rows", default=None, type=int, help="Number of rows to read. If not specified all rows will be loaded, useful for testing. Default: all rows")
+    psc_par.add_argument("--min-cells-per-metacell", default=50, type=int, help="Minimum number of cells used to create a metacell. Default: %(default)s")
+    psc_par.add_argument("--n-resamples", default=50, type=int, help="Times of re-sampling, i.e., number of transcriptional profiles per meta-cell. Default: %(default)s")
+    psc_par.add_argument("--n-samples", default=15, type=int, help="Number of resampled cells to create transcriptional profiles. Default: %(default)s")
+    psc_par.add_argument("--n-rows", default=None, type=int, help="Number of rows to read. If not specified all rows will be loaded, useful for testing purpose. Default: all rows")
 
     trn_par = subpar.add_parser("train", help="Train a model from expression data.")
     trn_par.add_argument("-c", "--config", required=True, help="Configuration file. Required")
@@ -810,8 +840,8 @@ def get_cli_opts():
     trn_par.add_argument("-k", "--keep-cell-type", action="store_true", default=False, help="Whether keep cell types as a predictor variable. Default: %(default)s")
     trn_par.add_argument("-m", "--model-arch", choices=["gbc", "rfc", "nn"], default="gbc", help="Which model architecture to be used, i.e., 'gbc', 'rfc', or 'nn'. Default: %(default)s")
     trn_par.add_argument("-@", "--n-jobs", default=1, type=int, help="Number of jobs to be run in parallel. Default: %(default)s")
-    trn_par.add_argument("--force-features", default=None, nargs="*", help="Features should be included by force. Default: %(default)s")
     trn_par.add_argument("--n-rows", default=None, type=int, help="Number of rows to read. If not specified all rows will be loaded, useful for testing. Default: all rows")
+    trn_par.add_argument("--force-features", default=None, nargs="*", help="Features should be included by force. Default: %(default)s")
 
     exp_par = subpar.add_parser("explain", help="Explain a model by SHAP values.")
     exp_par.add_argument("-i", "--in-file", default=None, help="The input data used for training. Default: %(default)s")
@@ -825,6 +855,7 @@ def get_cli_opts():
     prd_par.add_argument("-b", "--barcode-col", default="MetacellBarcodes", help="The column used as the index column, i.e., cell barcodes. Default: %(default)s")
     prd_par.add_argument("-t", "--cell-types", nargs="*", default=None, help="Cell types on which the model will be trained. Default: all")
     prd_par.add_argument("-n", "--n-rows", default=None, type=int, help="Number of rows to be read from the training in-file. Default: all")
+    prd_par.add_argument("-k", "--keep-expr", action="store_true", default=False, help="Whether keep expression data into the prediction results for each cells. Default: %(default)s")
     prd_par.add_argument("-o", "--out-subdir", default=None, help="The file name prefix used to save prediction results.")
     prd_par.add_argument("--n-iters", default=5000, type=int, help="Number interations of resampling to estimate the sample-level prediction. Default: %(default)s")
 

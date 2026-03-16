@@ -198,16 +198,16 @@ for per_handle, per_label in zip(*g.ax_joint.get_legend_handles_labels()):
     if per_label.startswith("wnnUMAP"): per_label = "Metacell"
     handles.append(per_handle)
     labels.append(per_label)
-_ = g.ax_joint.legend(handles, labels, loc="upper left", title="Cell Type", title_fontsize="small", fontsize="x-small")
+_ = g.ax_joint.legend(handles, labels, loc="upper right", title="Cell Type", title_fontsize="small", fontsize="x-small")
 _ = sns.kdeplot(x="wnnUMAP_1", hue="SampleLabel", multiple="stack", palette="Pastel1", data=all_rc_umap_mtx, ax=g.ax_marg_x)
-_ = g.ax_marg_x.legend(loc="upper left", labels=response_order, title=None, fontsize="x-small")
-_ = sns.kdeplot(y="wnnUMAP_2", hue="CellType", multiple="stack", legend=False, data=all_rc_umap_mtx, ax=g.ax_marg_y)
+_ = g.ax_marg_x.legend(loc="upper right", labels=response_order, title=None, fontsize="x-small")
+_ = sns.kdeplot(y="wnnUMAP_2", hue="SampleLabel", multiple="stack", palette="Pastel1", legend=False, data=all_rc_umap_mtx, ax=g.ax_marg_y)
 g.figure.set_size_inches(5.5, 5.5)
 g.savefig(f"{work_dir}/plots/metacells.BL.all_cell_type.umap.pdf", bbox_inches="tight")
 
 
 # Summary plot of top 30 important features
-cell_type = "nk_cell"
+cell_type = "b_cell"
 in_file = f"{work_dir}/models/{cell_type}/Metacells/train.expression_matrix_permetacell.csv"
 features = pd.read_csv(f"{work_dir}/models/{cell_type}/Train/Selected_features.csv", header=0).loc[:, "Feature"].to_list()
 raw_xmat, _, _, _, cts_map = load_expression_matrix(in_file, as_train=False, index_col="MetacellBarcodes", cell_types=None)
@@ -219,7 +219,7 @@ model = load_model(f"{work_dir}/models/{cell_type}/Train/Model.pickle")
 # Calculate SHAP values
 pbe, xmat = pipe_last_step(model, raw_xmat) # Obtain the last step of the sklearn pipeline and the corresponding input data.
 explainer = sp.Explainer(pbe, xmat) # Build a SHAP explainer.
-shap_vals = explainer(xmat) # Compute SHAP values.
+shap_vals = explainer(xmat, check_additivity=False) # Compute SHAP values.
 
 # Potential interactions based on SHAP values
 # inds = sp.utils.potential_interactions(shap_vals[:, "CD2"], shap_vals)
@@ -231,15 +231,13 @@ plot_shap_vals(shap_vals, max_display=30, save_to=f"{work_dir}/models/{cell_type
 # Scatter plots of SHAP values
 if cell_type == "cd8_t":
     plot_shap_vals(shap_vals, feature="CD2", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.CD2.pdf")
-    plot_shap_vals(shap_vals, feature="DDX3Y", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.DDX3Y.pdf")
     plot_shap_vals(shap_vals, feature="ITGB1", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.ITGB1.pdf")
     plot_shap_vals(shap_vals, feature="CD226", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.CD226.pdf")
     plot_shap_vals(shap_vals, feature="S100A4", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.S100A4.pdf")
 elif cell_type == "cd4_t":
+    plot_shap_vals(shap_vals, feature="ITGB1", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.ITGB1.pdf")
     plot_shap_vals(shap_vals, feature="CD2", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.CD2.pdf")
-    plot_shap_vals(shap_vals, feature="IL6R", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.IL6R.pdf")
     plot_shap_vals(shap_vals, feature="FOS", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.FOS.pdf")
-    plot_shap_vals(shap_vals, feature="LPAR6", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.LPAR6.pdf")
 elif cell_type == "monocyte":
     plot_shap_vals(shap_vals, feature="HLA-DQB1", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.HLA-DQB1.pdf")
     plot_shap_vals(shap_vals, feature="CLEC4E", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.CLEC4E.pdf")
@@ -248,6 +246,8 @@ elif cell_type == "monocyte":
     plot_shap_vals(shap_vals, feature="SELL", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.SELL.pdf")
 elif cell_type == "nk_cell":
     plot_shap_vals(shap_vals, feature="IFITM2", save_to=f"{work_dir}/models/{cell_type}/Explain/SHAP_values.scatter.IFITM2.pdf")
+
+print()
 
 
 # Interaction plots of SHAP values
@@ -273,10 +273,10 @@ for pct in ["monocyte", "cd4_t", "cd8_t", "b_cell", "nk_cell"]:
     # Calculate SHAP values
     pbe, xmat = pipe_last_step(model, raw_xmat) # Obtain the last step of the sklearn pipeline and the corresponding input data.
     explainer = sp.Explainer(pbe, xmat) # Build a SHAP explainer.
-    shap_vals = explainer(xmat) # Compute SHAP values.
+    shap_vals = explainer(xmat, check_additivity=False) # Compute SHAP values.
 
     # Plot SHAP values based on given model and input matrix
-    plot_shap_vals(shap_vals, max_display=30, save_to=f"{work_dir}/models/{pct}/Explain/SHAP_values.sumplot.pdf", fig_width=4.5)
+    # plot_shap_vals(shap_vals, max_display=30, save_to=f"{work_dir}/models/{pct}/Explain/SHAP_values.sumplot.pdf", fig_width=4.5)
 
     # Features that are highly correlated with the SHAP values
     nonconst_feature_idx = [i for i in range(shap_vals.data.shape[1]) if np.std(shap_vals.values[:, i]) != 0]

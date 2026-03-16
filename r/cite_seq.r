@@ -3,7 +3,8 @@
 # Author: Zhenhua Zhang
 # E-mail: zhenhua.zhang217@gmail.com
 # Created: Jun 06, 2023
-# Updated: Nov 22, 2023
+# Updated: Mar 01, 2024
+options(future.globals.maxSize=4096*1024^2)
 
 suppressPackageStartupMessages({
   library(lobstr)
@@ -16,6 +17,7 @@ suppressPackageStartupMessages({
   library(SeuratData)
   library(CellMixS)
   library(SingleCellExperiment)
+  library(scDblFinder)
 })
 
 
@@ -51,11 +53,13 @@ major_meta_tab <- fread(meta_data_path) %>%
 
 # Sequencing meta data, samples per pool
 other_meta_tab <- tibble::tribble(
-  ~Patient_ID, ~pool, ~Timepoint, # ~Timepoint_raw,
+  ~Patient_ID, ~SequencingPool, ~Timepoint, # ~Timepoint_raw,
   "PML0002", "CITEpool2", "3M", # "3 months",
   "PML0002", "CITEpool4", "BL", # "BL",
   "PML0009", "CITEpool3", "3M", # "3 months",
   "PML0009", "CITEpool2", "BL", # "BL",
+  "PML0016", "CITEpool1", "BL", # "BL",
+  "PML0035", "CITEpool3", "BL", # "BL",
   "PML0017", "CITEpool1", "6W", # "6 weeks",
   "PML0017", "CITEpool4", "BL", # "BL",
   "PML0022", "CITEpool1", "3M", # "3 months",
@@ -63,8 +67,10 @@ other_meta_tab <- tibble::tribble(
   "PML0022", "CITEpool3", "BL", # "BL",
   "PML0025", "CITEpool1", "6M", # "6 months",
   "PML0025", "CITEpool4", "BL", # "BL",
+  "PML0008", "CITEpool4", "BL", # "BL",
+  "PML0008", "CITEpool2", "6W", # "6 weeks",
+  "PML0008", "CITEpool3", "3M", # "3 months",
 )
-
 
 # Load data and basic QC
 selected_pools <- 1:4
@@ -97,13 +103,13 @@ pbmc_list <- lapply(pools, function(pn, .dmres_path, .bcmat_path, .overwrite) {
     # Update meta data
     raw_barcodes <- colnames(po)
     extra_meta_tab <- read.csv(file.path(pp, "barcodes.tsv"), col.names = "Cellbarcode") %>%
-      dplyr::mutate(pool = pn) %>%
+      dplyr::mutate(SequencingPool = pn) %>%
       dplyr::left_join(dm_tab, by = "Cellbarcode") %>%
       dplyr::left_join(major_meta_tab, by = c("Vireo_assignment" = "Patient_ID")) %>%
-      dplyr::left_join(other_meta_tab, by = c("Vireo_assignment" = "Patient_ID", "pool"))
+      dplyr::left_join(other_meta_tab, by = c("Vireo_assignment" = "Patient_ID", "SequencingPool"))
     po@meta.data <- po@meta.data %>%
-      dplyr::mutate(Cellbarcode = rownames(.) %>% stringr::str_remove("_[0-9]$"), pool = pn) %>%
-      dplyr::left_join(extra_meta_tab, by = c("pool", "Cellbarcode")) %>%
+      dplyr::mutate(Cellbarcode = rownames(.) %>% stringr::str_remove("_[0-9]$"), SequencingPool = pn) %>%
+      dplyr::left_join(extra_meta_tab, by = c("SequencingPool", "Cellbarcode")) %>%
       (function(tab) {rownames(tab) <- raw_barcodes; tab})
 
     # QC plots
@@ -125,21 +131,24 @@ pbmc_list <- lapply(pools, function(pn, .dmres_path, .bcmat_path, .overwrite) {
   }
 
   invisible(po)
-}, .dmres_path = dmres_path, .bcmat_path = bcmat_path, .overwrite = TRUE)
+}, .dmres_path = dmres_path, .bcmat_path = bcmat_path, .overwrite = FALSE)
 
 
 # Filtering cells using soft threshold quantile(probs = c(0.05, 0.95)) on each parameter.
 soft_threshold <- tibble::tribble(
-  ~pool, ~min_ncount_rna, ~max_ncount_rna, ~min_nfeature_rna, ~max_nfeature_rna, ~max_percent_mt,
+  ~SequencingPool, ~min_ncount_rna, ~max_ncount_rna, ~min_nfeature_rna, ~max_nfeature_rna, ~max_percent_mt,
   "CITEpool1", 2087, 17112, 986, 4190, 9.4,
   "CITEpool2", 1811, 11152, 773, 3380, 9.8,
   "CITEpool3", 1763, 20000, 574, 3742, 9.5,
   "CITEpool4", 2037, 18513, 1041, 4393, 9.4,
 )
 
+# selected_donors <- other_meta_tab$Patient_ID %>% unique(); save_token <- "all_samples"
 selected_donors <- c("PML0002", "PML0009", "PML0017", "PML0022", "PML0025")
-pbmc <- lapply(pools, function(pn, .pbmc, .hard_threshold, .cc_genes) {
-  params <- .hard_threshold %>% dplyr::filter(pool == pn)
+
+pbmc <- lapply(pools, function(pn, .pbmc, .threshold, .cc_genes) {
+  # pn <- "CITEpool1"
+  params <- .threshold %>% dplyr::filter(SequencingPool == pn)
   min_ncount_rna <- params["min_ncount_rna"] %>% as.integer()
   max_ncount_rna <- params["max_ncount_rna"] %>% as.integer()
   min_nfeature_rna <- params["min_nfeature_rna"] %>% as.integer()
@@ -148,212 +157,121 @@ pbmc <- lapply(pools, function(pn, .pbmc, .hard_threshold, .cc_genes) {
 
   po <- .pbmc[[pn]]
 
-  po$pool <- pn
+  po$SequencingPool <- pn
   tar_cells <- po@meta.data %>%
     as.data.frame() %>%
     dplyr::filter(min_ncount_rna <= nCount_RNA, nCount_RNA <= max_ncount_rna, min_nfeature_rna <= nFeature_RNA, nFeature_RNA <= max_nfeature_rna, 100 <= nFeature_ADT, 500 <= nCount_ADT, nCount_ADT <= 20000, percent_mt < max_percent_mt, percent_rb < 50) %>%
     dplyr::filter(Vireo_assignment %in% selected_donors) %>%
-    dplyr::filter(!(Vireo_assignment == "PML0002" & Timepoint == "3M")) %>%
+    # dplyr::filter(!(Vireo_assignment == "PML0002" & Timepoint == "3M")) %>%
     rownames()
 
   tar_features <- c(rownames(po@assays$RNA), rownames(po@assays$ADT)) %>% purrr::discard(~stringr::str_detect(.x, "^MT-|^RP[LS]"))
 
   po <- po[tar_features, tar_cells] %>%
-    NormalizeData(assay = "RNA") %>%
-    CellCycleScoring(assay = "RNA", s.features = .cc_genes$s.genes, g2m.features = .cc_genes$g2m.genes, set.ident = TRUE) %>%
-    SCTransform(assay = "RNA", vst.flavor = "v2", vars.to.regress = c("percent_mt", "S.Score", "G2M.Score"), method = "glmGamPoi", variable.features.n = 3000) %>%
-    NormalizeData(assay = "ADT", normalization.method = "CLR", margin = 2) %>%
-    RunPCA(assay = "SCT", npcs = 30, verbose = FALSE)
+    NormalizeData(assay = "RNA", verbose = FALSE) %>%
+    CellCycleScoring(assay = "RNA", s.features = .cc_genes$s.genes, g2m.features = .cc_genes$g2m.genes, set.ident = TRUE, verbose = FALSE) %>%
+    SCTransform(assay = "RNA", vst.flavor = "v2", vars.to.regress = c("percent_mt", "S.Score", "G2M.Score"), method = "glmGamPoi", variable.features.n = 3000, verbose = FALSE) %>%
+    NormalizeData(assay = "ADT", normalization.method = "CLR", margin = 2, verbose = FALSE) %>%
+    RunPCA(assay = "SCT", verbose = FALSE)
 
   invisible(po)
-}, .pbmc = pbmc_list, .hard_threshold = soft_threshold, .cc_genes = cc.genes)
+}, .pbmc = pbmc_list, .threshold = soft_threshold, .cc_genes = cc.genes)
 
 # Integrate multiple pools
-features <- SelectIntegrationFeatures(pbmc)
-pbmc <- PrepSCTIntegration(pbmc, anchor.features = features)
-anchors <- FindIntegrationAnchors(pbmc, normalization.method = "SCT", anchor.features = features, reduction = "rpca", dims = 1:30, k.anchor = 20)
-pbmc_int <- IntegrateData(anchors, normalization.method = "SCT", dims = 1:30)
+features <- SelectIntegrationFeatures(pbmc, verbose = FALSE)
+pbmc <- PrepSCTIntegration(pbmc, anchor.features = features, verbose = FALSE)
+anchors <- FindIntegrationAnchors(pbmc, normalization.method = "SCT", anchor.features = features, reduction = "rpca", dims = 1:30, k.anchor = 20, verbose = FALSE)
+pbmc_int <- IntegrateData(anchors, normalization.method = "SCT", dims = 1:30, verbose = FALSE)
 
 # Do PCA and regress out cell cycle scores
-pbmc_int <- RunPCA(pbmc_int, assay = "integrated", npcs = 30, reduction.name = "int_pca") %>%
-  ScaleData(assay = "ADT", vars.to.regress = c("percent_mt", "S.Score", "G2M.Score")) %>%
-  RunPCA(assay = "ADT", features = rownames(pbmc_int[["ADT"]]), npcs = 30, reduction.name = "adt_pca")
+pbmc_int <- RunPCA(pbmc_int, assay = "integrated", reduction.name = "intpca", verbose = FALSE) %>%
+  ScaleData(assay = "ADT", vars.to.regress = c("percent_mt", "S.Score", "G2M.Score"), verbose = FALSE) %>%
+  RunPCA(assay = "ADT", features = rownames(pbmc_int[["ADT"]]), reduction.name = "adtpca", verbose = FALSE)
 
 # Find neighbors using multiple modal data and do UMAP
-pbmc_int <- FindMultiModalNeighbors(pbmc_int, reduction.list = list("int_pca", "adt_pca"), dims.list = list(1:30, 1:30), modality.weight.name = "RNA.weight")
-pbmc_int <- RunUMAP(pbmc_int, nn.name = "weighted.nn", reduction = "int_pca", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_", dims = 1:30)
-pbmc_int <- FindClusters(pbmc_int, graph.name = "wsnn", resolution = 0.1)
+pbmc_int <- FindMultiModalNeighbors(pbmc_int, reduction.list = list("intpca", "adtpca"), dims.list = list(1:30, 1:30), modality.weight.name = "RNA.weight", verbose = FALSE)
+pbmc_int <- RunUMAP(pbmc_int, nn.name = "weighted.nn", reduction = "intpca", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_", dims = 1:30, verbose = FALSE)
+pbmc_int <- FindClusters(pbmc_int, graph.name = "wsnn", resolution = 0.1, verbose = FALSE)
 
-# Prepare for DEG analysis
-pbmc_int <- PrepSCTFindMarkers(pbmc_int)
-
-# Annotate the cells by Azimuth
-DefaultAssay(pbmc_int) <- "integrated"
-pbmc_int <- RunAzimuth(pbmc_int, reference = "pbmcref")
-
-# Save the data to disk
-save_to <- file.path(object_dir, "integrated/pbmc.cite_seq.integrated.pca_umap_clustered.annotated.rds")
-saveRDS(pbmc_int, save_to)
+# Identify doublets
+DefaultAssay(pbmc_int) <- "SCT"
+pbmc_cmb_sce <- as.SingleCellExperiment(pbmc_int)
+reducedDim(pbmc_cmb_sce, "UMAP") <- pbmc_int@reductions$wnn.umap@cell.embeddings
+reducedDim(pbmc_cmb_sce, "PCA") <- pbmc_int@reductions$intpca@cell.embeddings
+pbmc_cmb_sce <- scDblFinder(pbmc_cmb_sce, clusters = TRUE)
+pbmc_int$scDblFinder_class <- pbmc_cmb_sce$scDblFinder.class
+pbmc_int$scDblFinder_score <- pbmc_cmb_sce$scDblFinder.score
 
 
 #
 ## Result overview
 #
 # Estimate the entropy by CellMixS
-pbmc_cmb_sce <- as.SingleCellExperiment(pbmc_int)
-reducedDim(pbmc_cmb_sce, "UMAP") <- pbmc_int@reductions$wnn.umap@cell.embeddings
-reducedDim(pbmc_cmb_sce, "PCA") <- pbmc_int@reductions$int_pca@cell.embeddings
-pbmc_cmb_sce <- entropy(pbmc_cmb_sce, "pool", k = 20)
-save_to <- file.path(plot_dir, "integrated/pbmc.cite_seq.integrated.umap_entropy.pdf")
-pdf(save_to, width = 12, height = 5)
-visOverview(pbmc_cmb_sce, "pool", dim_red = "UMAP", metric = "entropy")
-dev.off()
+entropy_plot_save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.integrated.umap_entropy.pdf"))
+if (!file.exists(entropy_plot_save_to)) {
+  pbmc_cmb_sce <- as.SingleCellExperiment(pbmc_int)
+  reducedDim(pbmc_cmb_sce, "UMAP") <- pbmc_int@reductions$wnn.umap@cell.embeddings
+  reducedDim(pbmc_cmb_sce, "PCA") <- pbmc_int@reductions$intpca@cell.embeddings
+  pbmc_cmb_sce <- entropy(pbmc_cmb_sce, "SequencingPool", k = 20)
+  pdf(entropy_plot_save_to, width = 12, height = 5)
+  visOverview(pbmc_cmb_sce, "SequencingPool", dim_red = "UMAP", metric = "entropy")
+  dev.off()
+}
 
 # Check the clusters, PCA
-for (ppca in c("int_pca", "adt_pca")) {
+for (ppca in c("intpca", "adtpca")) {
+  pca_plot_save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.integrated.", ppca, ".pdf"))
   p <- DimPlot(pbmc_int, reduction = ppca)
-  save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.integrated.", ppca, ".pdf"))
-  ggsave(save_to, plot = p)
+  ggsave(pca_plot_save_to, plot = p)
 }
 
 # Check the clusters, UMAP
-for (per_group in c("seurat_clusters", "predicted.celltype.l1", "predicted.celltype.l2", "pool", "Response", "Sex", "Vireo_assignment", "Timepoint")) {
-  p <- DimPlot(pbmc_int, reduction = "wnn.umap", group.by = per_group)
+for (per_group in c("seurat_clusters", "SequencingPool", "Response", "Sex", "Vireo_assignment", "Timepoint")) {
   nm <- stringr::str_replace_all(per_group, "\\.", "_")
-  save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.integrated.umap_by_", nm, ".pdf"))
+  umap_save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.integrated.umap_by_", nm, ".pdf"))
+  p <- DimPlot(pbmc_int, reduction = "wnn.umap", group.by = per_group)
   plot_wd <- ifelse(per_group == "predicted.celltype.l2", 10, 7)
-  ggsave(save_to, plot = p, width = plot_wd)
+  ggsave(umap_save_to, plot = p, width = plot_wd)
 }
 
 # Cell type markers
-for (per_group in c("seurat_clusters", "predicted.celltype.l1", "predicted.celltype.l2")) {
-  p <- DotPlot(pbmc_int, features = celltype_markers, group.by = per_group, cluster.idents = TRUE) + coord_flip() + RotatedAxis()
+for (per_group in c("seurat_clusters")) {
   nm <- stringr::str_replace_all(per_group, "\\.", "_")
   save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.celltype_markers.dotplot_by_", nm, ".pdf"))
+  p <- DotPlot(pbmc_int, features = celltype_markers, group.by = per_group, cluster.idents = TRUE) + coord_flip() + RotatedAxis()
   plot_wd <- pbmc_int[[per_group]] %>% unique() %>% nrow() %>% `*`(0.4) %>% `+`(2)
   ggsave(save_to, p, width = plot_wd, height = 12)
 }
 
+# Expression distribution of cell type marker genes
+p <- FeaturePlot(pbmc_int, features = celltype_markers, order = TRUE, reduction = "wnn.umap", ncol = 5) &
+  labs(x = NULL, y = NULL) &
+  scale_y_continuous(expand = c(0.01, 0.01)) &
+  scale_x_continuous(expand = c(0.01, 0.01)) &
+  theme(legend.position = "none", axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(linetype = "dotted"), plot.title = element_text(size = 8))
+save_to <- file.path(plot_dir, "integrated/pbmc.cite_seq.integrated.cell_type_markers.wnn_umap.pdf")
+ggsave(save_to, plot = p, width = 10, height = 20)
+
 # Check example
+save_to <- file.path(plot_dir, "integrated", paste0("pbmc.cite_seq.integrated.CD16_gex.feature_plot.pdf"))
 p1 <- FeaturePlot(pbmc_int, "Hu.CD16", cols = c("lightgrey", "darkgreen"), reduction = "wnn.umap") + ggtitle("CD16 protein")
 p2 <- FeaturePlot(pbmc_int, "FCGR3A", reduction = "wnn.umap") + ggtitle("FCGR3A(CD16) expression")
 p <- p1 | p2
-save_to <- file.path(plot_dir, "integrated/pbmc.cite_seq.integrated.CD16_gex.feature_plot.pdf")
 ggsave(save_to, plot = p, width = 12, height = 6)
 
+# Check and remove doublets
+Idents(pbmc_int) <- "scDblFinder_class"
+p <- DimPlot(pbmc_int, split.by = "scDblFinder_class", reduction = "wnn.umap", order = TRUE) & NoLegend()
+save_to <- file.path(plot_dir, "integrated/pbmc.cite_seq.integrated.scdblfinder_class.umap.pdf")
+ggsave(save_to, plot = p, width = 6, height = 4)
 
-#
-## Cell proportion
-#
-cell_propotion_tab <- pbmc_int@meta.data %>%
-  dplyr::group_by(Vireo_assignment, Timepoint, Response, predicted.celltype.l1) %>%
-  dplyr::summarise(n = n()) %>%
-  dplyr::mutate(prop = n / sum(n)) %>%
-  dplyr::arrange(desc(prop)) %>%
-  dplyr::mutate(predicted.celltype.l1 = factor(predicted.celltype.l1, levels = c("Mono", "CD8 T", "CD4 T", "B", "NK", "DC", "other T", "other"))) %>%
-  dplyr::mutate(Timepoint = factor(Timepoint, levels = c("BL", "6W", "3M"))) %>%
-  dplyr::ungroup() %>%
-  dplyr::select(PatientID = Vireo_assignment, Timepoint, Response, predicted.celltype.l1, prop)
-save_to <- file.path(plot_dir, "cell_proportion/pbmc.cite_seq.integrated.cell_propotion.csv")
-fwrite(cell_propotion_tab, save_to)
+# Remove doublets
+tar_cells <- colnames(pbmc_int)[pbmc_int$scDblFinder_class == "singlet"]
+pbmc_int <- pbmc_int[, tar_cells]
 
-# 1. Cell proportion overview
-p <- cell_propotion_tab %>%
-  ggplot() +
-  geom_line(aes(x = Timepoint, y = prop, group = PatientID)) +
-  geom_point(aes(x = Timepoint, y = prop, color = Response), alpha = 0.75) +
-  scale_fill_npg() +
-  theme_classic() +
-  theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(y = "Proportion", x = "Cell type") +
-  facet_grid(~predicted.celltype.l1, space = "free_x")
-save_to <- file.path(plot_dir, "cell_proportion/pbmc.cite_seq.integrated.cell_proportion.pdf")
-ggsave(save_to, plot = p, width = 8.5, height = 3)
+# Prepare for DEG analysis
+pbmc_int <- PrepSCTFindMarkers(pbmc_int, verbose = FALSE)
 
-# 2. Cell proportion by patient
-p <- cell_propotion_tab %>%
-  ggplot() +
-  geom_point(aes(x = PatientID, y = prop, color = predicted.celltype.l1)) +
-  scale_color_npg() +
-  theme_classic() +
-  theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(y = "Proportion", x = "Cell type") +
-  facet_grid(~Timepoint, scales = "free_x", space = "free_x")
-save_to <- file.path(plot_dir, "cell_proportion/pbmc.cite_seq.integrated.cell_proportion_by_patient.pdf")
-ggsave(save_to, plot = p, width = 8.5, height = 3)
-
-# 3. Cell proportion by timepoints
-p <- cell_propotion_tab %>%
-  ggplot() +
-  geom_col(aes(x = Timepoint, y = prop, fill = predicted.celltype.l1), width = 0.985) +
-  scale_fill_npg() +
-  theme_classic() +
-  theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(y = "Proportion", x = "Cell type") +
-  facet_grid(~PatientID, scales = "free_x", space = "free_x")
-save_to <- file.path(plot_dir, "cell_proportion/pbmc.cite_seq.integrated.cell_proportion_by_timepoints.pdf")
-ggsave(save_to, plot = p, width = 8.5, height = 3)
-
-
-#
-## DE gene analysis, using unnormalized RNA data
-#
-de_tab <- NULL
-# 1. DE genes between responder and non-responder per cell type per time point
-Idents(pbmc_int) <- paste(pbmc_int$predicted.celltype.l1, pbmc_int$Response, pbmc_int$Timepoint, sep = "_")
-for (pct in tar_cell_types) {
-  for (ptp in c("BL", "6W", "3M")) {
-    id_1 <- paste0(pct, "_Responder_", ptp)
-    id_2 <- paste0(pct, "_Non-responder_", ptp)
-    tryCatch({
-      de_tab <- FindMarkers(pbmc_int, ident.1 = id_1, ident.2 = id_2, min.pct = 0.2, logfc.threshold = 0.2) %>% 
-        dplyr::mutate(gene_symbol = rownames(.), donors = "All", celltype = pct, comparison = paste0("Rs.vs.NRs_", ptp)) %>%
-        dplyr::mutate(direction = dplyr::if_else(avg_log2FC > 0, "up", "dw")) %>%
-        rbind(de_tab, .)
-    }, error = function(e) cat(e$message, "; ", paste(id_1, id_2, "failed, comparison 1\n")))
-  }
-}
-
-# 2. DE genes between three time points in responders per cell type.
-Idents(pbmc_int) <- paste(pbmc_int$predicted.celltype.l1, pbmc_int$Timepoint, sep = "_")
-tar_cells <- pbmc_int@meta.data %>% dplyr::filter(Response == "Non-responder") %>% rownames()
-for (pct in tar_cell_types) {
-  id_1 <- paste0(pct, "_BL")
-  id_2 <- paste0(pct, "_6W")
-  id_3 <- paste0(pct, "_3M")
-  tryCatch({
-    de_tab <- FindMarkers(pbmc_int[, tar_cells], ident.1 = id_3, ident.2 = id_1, min.pct = 0.2, logfc.threshold = 0.2) %>%
-      dplyr::mutate(gene_symbol = rownames(.), donors = "Responder", celltype = pct, comparison = "3M.vs.BL") %>%
-      dplyr::mutate(direction = dplyr::if_else(avg_log2FC > 0, "up", "dw")) %>%
-      rbind(de_tab)
-  }, error = function(e) cat(e$message, "; ", paste(id_2, id_1, "failed, comparison 2\n")))
-  tryCatch({
-    de_tab <- FindMarkers(pbmc_int[, tar_cells], ident.1 = id_2, ident.2 = id_1, min.pct = 0.2, logfc.threshold = 0.2) %>%
-      dplyr::mutate(gene_symbol = rownames(.), donors = "Responder", celltype = pct, comparison = "6W.vs.BL") %>%
-      dplyr::mutate(direction = dplyr::if_else(avg_log2FC > 0, "up", "dw")) %>%
-      rbind(de_tab, .)
-  }, error = function(e) cat(e$message, "; ", paste(id_2, id_1, "failed, comparison 2\n")))
-  tryCatch({
-    de_tab <- FindMarkers(pbmc_int[, tar_cells], ident.1 = id_3, ident.2 = id_2, min.pct = 0.2, logfc.threshold = 0.2) %>%
-      dplyr::mutate(gene_symbol = rownames(.), donors = "Responder", celltype = pct, comparison = "3M.vs.6w") %>%
-      dplyr::mutate(direction = dplyr::if_else(avg_log2FC > 0, "up", "dw")) %>%
-      rbind(de_tab, .)
-  }, error = function(e) cat(e$message, "; ", paste(id_2, id_1, "failed, comparison 2\n")))
-}
-
-# 3. DE genes between three time points in non-responders per cell type.
-Idents(pbmc_int) <- paste(pbmc_int$predicted.celltype.l1, pbmc_int$Timepoint, sep = "_")
-tar_cells <- pbmc_int@meta.data %>% dplyr::filter(Response == "Non-responder") %>% rownames()
-for (pct in tar_cell_types) {
-  id_1 <- paste0(pct, "_BL")
-  id_2 <- paste0(pct, "_3M")
-  tryCatch({
-    de_tab <- FindMarkers(pbmc_int[, tar_cells], ident.1 = id_2, ident.2 = id_1, min.pct = 0.2, logfc.threshold = 0.2) %>%
-      dplyr::mutate(gene_symbol = rownames(.), donors = "Non-responder", celltype = pct, comparison = "3m.vs.BL") %>%
-      dplyr::mutate(direction = dplyr::if_else(avg_log2FC > 0, "up", "dw")) %>%
-      rbind(de_tab, .)
-  }, error = function(e) cat(e$message, "; ", paste(id_2, id_1, "failed, comparison 3\n")) )
-}
-
-save_to <- file.path(proj_dir, "outputs/analysis/CITE_seq/deg/pbmc.cite_seq.integrated.de_gene.csv")
-fwrite(de_tab, save_to)
+# Save the integrated object
+obj_save_to <- file.path(object_dir, "integrated", paste0("pbmc.cite_seq.integrated.pca_umap_clustered.annotated.rds"))
+saveRDS(pbmc_int, obj_save_to)

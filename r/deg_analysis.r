@@ -6,40 +6,50 @@
 # Updated: Nov 23, 2023
 
 suppressPackageStartupMessages({
-  library(tidyverse)
+  library(gtools)
   library(data.table)
-  library(Seurat)
+  library(igraph)
+
+  library(tidyverse)
+  library(tidygraph)
 
   library(ggsci)
   library(ggbreak)
   library(ggrepel)
-  library(ggsankey) # or library(ggalluvial)
   library(ggVennDiagram)
-
-  library(gtools)
-
-  library(GOplot)
-  library(enrichplot)
-  library(ComplexHeatmap)
   library(ggdendro)
-
-  library(GOSemSim)
-  library(goProfiles)
+  library(ggraph)
 
   library(circlize)
   library(patchwork)
+  library(enrichplot)
+  library(RColorBrewer)
+  library(ComplexHeatmap)
+
+  library(Seurat)
 
   library(clusterProfiler)
+  library(GOSemSim)
+  library(goProfiles)
+  library(fgsea)
+
   library(org.Hs.eg.db)
 })
 
 # Utility functions
 shrink_to_range <- function(x, t) {
-  min_val <- min(t)
-  max_val <- max(t)
-  scaled_x <- min_val + (x - min(x)) * (max_val - min_val) / (max(x) - min(x))
+  t_min <- min(t, na.rm = TRUE)
+  t_max <- max(t, na.rm = TRUE)
+  x_min <- min(x, na.rm = TRUE)
+  x_max <- max(x, na.rm = TRUE)
+  scaled_x <- t_min + (x - x_min) * (t_max - t_min) / (x_max - x_min)
   return(scaled_x)
 }
+
+# colors
+rbgc <- brewer.pal(n = 11, name = "RdBu")
+# chrom_xy_genes <- c("RPS4Y1", "EIF1AY", "UTY", "EIF1AX", "USP9Y", "ZFY", "XIST", "RPS4X", "JPX", "ZFX", "ZRSR2", "DDX3Y", "DDX3X", "KDM6A", "EIF2S3", "KDM5C", "TXLNG", "PRKX", "CXorf38", "SMC1A", "CA5B", "UBA1", "FUNDC1", "KANTR", "CD99", "SYAP1")
+chrom_xy_genes <- fread("~/Documents/projects/wp_pml/inputs/references/sextual_chromosome_genes.txt", header = F) %>% pull(V2)
 
 
 #
@@ -47,7 +57,8 @@ shrink_to_range <- function(x, t) {
 #
 proj_dir <- "~/Documents/projects/wp_pml"
 deg_dir <- file.path(proj_dir, "outputs/analysis/deg")
-plot_dir <- file.path(proj_dir, "outputs/analysis/integrated/plots")
+plot_dir <- file.path(deg_dir, "plots")
+table_dir <- file.path(deg_dir, "tables")
 object_dir <- file.path(proj_dir, "outputs/analysis/integrated/objects")
 
 tar_cell_types <- c("Mono", "CD4 T", "CD8 T", "B", "NK")
@@ -65,8 +76,8 @@ pml_omics_tab <- tibble::tribble(
   # "pml_atacseq", "pml_atacseq.rds", # Not included in the analysis yet.
 )
 
-de_tab_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("pbmc.integrated.de_gene.csv"))
-cp_tab_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("pbmc.integrated.cell_proportion.csv"))
+de_tab_save_to <- file.path(proj_dir, "outputs/analysis/deg/tables", paste0("pbmc.integrated.de_gene.csv"))
+cp_tab_save_to <- file.path(proj_dir, "outputs/analysis/deg/tables", paste0("pbmc.integrated.cell_proportion.csv"))
 if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
   cat("[I]: Loading from disk... \n")
   de_tab_all <- fread(de_tab_save_to)
@@ -88,7 +99,8 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         dplyr::mutate(predicted.celltype.l1 = factor(predicted.celltype.l1, levels = .celltype_order)) %>%
         dplyr::mutate(Timepoint = factor(Timepoint, levels = c("BL", "6W", "3M"))) %>%
         dplyr::ungroup() %>%
-        dplyr::select(PatientID = Vireo_assignment, Timepoint, Response, predicted.celltype.l1, prop)
+        dplyr::select(PatientID = Vireo_assignment, Timepoint, Response, predicted.celltype.l1, prop) %>%
+        dplyr::filter(!(Timepoint == "3M" & Response == "Non-responder"))
 
       ## 1. Cell proportion overview
       p <- ggplot(cell_proportion_tab) +
@@ -99,7 +111,7 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
         labs(y = "Proportion", x = "Cell type") +
         facet_grid(~predicted.celltype.l1, space = "free_x")
-      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, ".integrated.cell_proportion.pdf"))
+      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/plots", paste0("pbmc.", omics_type, ".integrated.cell_proportion.v2.pdf"))
       ggsave(save_to, plot = p, width = 8.5, height = 3)
 
       ## 2. Cell proportion by patient
@@ -110,7 +122,7 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
         labs(y = "Proportion", x = "Cell type") +
         facet_grid(~Timepoint, scales = "free_x", space = "free_x")
-      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_patient.pdf"))
+      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/plots", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_patient.pdf"))
       ggsave(save_to, plot = p, width = 8.5, height = 3)
 
       ## 3. Cell proportion by timepoints
@@ -121,7 +133,7 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
         labs(y = "Proportion", x = "Cell type") +
         facet_grid(~PatientID, scales = "free_x", space = "free_x")
-      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_timepoints.pdf"))
+      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/plots", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_timepoints.pdf"))
       ggsave(save_to, plot = p, width = 8.5, height = 3)
 
       # DE gene analysis
@@ -207,7 +219,7 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
         labs(y = "Proportion", x = "Cell type") +
         facet_grid(~predicted.celltype.l1, space = "free_x")
-      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, ".integrated.cell_proportion.pdf"))
+      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/plots", paste0("pbmc.", omics_type, ".integrated.cell_proportion.pdf"))
       ggsave(save_to, plot = p, width = 8.5, height = 3)
 
       # 2. Cell proportion by patient
@@ -218,7 +230,7 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
         labs(y = "Proportion", x = "Cell type") +
         facet_grid(~Timepoint, scales = "free_x", space = "free_x")
-      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_patient.pdf"))
+      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/plots", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_patient.pdf"))
       ggsave(save_to, plot = p, width = 8.5, height = 3)
 
       # 3. Cell proportion by timepoints
@@ -229,7 +241,7 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
         theme(axis.text.y = element_text(size = 8), axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1)) +
         labs(y = "Proportion", x = "Cell type") +
         facet_grid(~PatientID, scales = "free_x", space = "free_x")
-      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_timepoints.pdf"))
+      save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/plots", paste0("pbmc.", omics_type, ".integrated.cell_proportion_by_timepoints.pdf"))
       ggsave(save_to, plot = p, width = 7, height = 3)
 
       # DE gene analysis
@@ -249,11 +261,11 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
     }
 
     cell_proportion_tab$data_source <- omics_type
-    save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion", paste0("pbmc.", omics_type, "integrated.cell_propotion.csv"))
+    save_to <- file.path(proj_dir, "outputs/analysis/cell_proportion/tables", paste0("pbmc.", omics_type, "integrated.cell_propotion.csv"))
     fwrite(cell_proportion_tab, save_to)
 
     de_tab <- dplyr::mutate(de_tab, direction = dplyr::if_else(avg_log2FC > 0, "up", "dw"), data_source = omics_type)
-    save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("pbmc.", omics_type, ".integrated.de_gene.csv"))
+    save_to <- file.path(proj_dir, "outputs/analysis/deg/tables", paste0("pbmc.", omics_type, ".integrated.de_gene.csv"))
     fwrite(de_tab, save_to)
 
     list(detab = de_tab, cptab = cell_proportion_tab)
@@ -269,15 +281,17 @@ if (file.exists(de_tab_save_to, cp_tab_save_to) %>% all()) {
 
 
 # 1. Plot number of DE genes between responders and non-responders at each time point per cell type.
+per_omics <- "pml_rnaseq"
 per_omics <- "pml_citeseq"
 de_fmt_tab <- as.data.table(de_tab_all) %>%
-  dplyr::filter(p_val_adj <= 0.05, donors == "All", data_source == per_omics, abs(avg_log2FC) >= 0.25) %>% 
+  dplyr::filter(p_val_adj <= 0.05, abs(avg_log2FC) >= 0.1, pct.2 >= 0.05, pct.1 >= 0.05, donors == "All", data_source == per_omics, !(gene_symbol %in% chrom_xy_genes)) %>% 
   tidyr::separate(comparison, into = c("comparison", "timepoint"), sep = "_") %>%
   dplyr::mutate(timepoint = factor(timepoint, levels = c("BL", "3M", "PT")))
 
+
 # Bar plot show number of DE genes
 de_count_tab <- de_fmt_tab %>%
-  dplyr::filter(data_source == per_omics) %>%
+  dplyr::filter(data_source == per_omics, timepoint != "PT") %>%
   dplyr::group_by(data_source, celltype, timepoint, comparison, direction) %>%
   dplyr::summarise(n = n()) %>%
   dplyr::ungroup() %>%
@@ -293,10 +307,9 @@ p <- de_count_tab %>%
   labs(x = NULL, y = NULL, fill = "Responders vs non-responders") +
   theme_classic() +
   theme(legend.position = "top", axis.text.y = element_text(size = 8), axis.text.x = element_text(angle = 45, hjust = 1), strip.background = element_blank()) +
-  facet_wrap(~timepoint, ncol = 1, strip.position = "right")
-
-save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".Rs_vs_NR.per_timepoint.pdf"))
-ggsave(save_to, plot = p, width = 4, height = 12)
+  facet_wrap(~timepoint, nrow = 1)
+save_to <- file.path(proj_dir, "outputs/analysis/deg/plots", paste0("de_gene.", per_omics, ".Rs_vs_NR.per_timepoint.pdf"))
+ggsave(save_to, plot = p, width = 8, height = 4)
 
 # Venn diagram to show DE genes shared
 for (pct in tar_cell_types) {
@@ -312,11 +325,9 @@ for (pct in tar_cell_types) {
       )})
 
   pct <- stringr::str_remove_all(pct, " ")
-  save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, pct, "Rs_vs_NR.per_timepoint.venn_diagram.v2.pdf", sep = "."))
+  save_to <- file.path(proj_dir, "outputs/analysis/deg/plots", paste("de_gene", per_omics, "per_timepoint.venn_diagram.v2.pdf", sep = "."))
   p <- ggVennDiagram(venn_plot_list) + scale_fill_gradient(low = "white", high = "darkblue") + theme(legend.position = "none")
   ggsave(save_to, plot = p, width = 6, height = 6)
-
-  mat <- make_comb_mat(venn_plot_list)
 }
 
 # Overlaps of identified DEGs
@@ -330,12 +341,9 @@ comb_mat <- de_fmt_tab %>%
     list_to_matrix() %>%
     make_comb_mat()
 
-gene_upset_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, "all_celltype.Rs_vs_NR.BL.upset_plot.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
+gene_upset_save_to <- file.path(plot_dir, paste("de_gene", per_omics, "all_celltype.Rs_vs_NR.BL.upset_plot.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
 pdf(gene_upset_save_to, width = 6.5, height = 3.25)
-UpSet(comb_mat,
-  top_annotation = upset_top_annotation(comb_mat, add_numbers = TRUE),
-  left_annotation = upset_left_annotation(comb_mat, add_numbers = TRUE),
-  bg_col = "#F0F0FF", bg_pt_col = "#CCCCFF") %>% draw()
+UpSet(comb_mat,top_annotation = upset_top_annotation(comb_mat, add_numbers = TRUE), left_annotation = upset_left_annotation(comb_mat, add_numbers = TRUE), bg_col = "#F0F0FF", bg_pt_col = "#CCCCFF") %>% draw()
 dev.off()
 
 
@@ -344,13 +352,9 @@ for (pct in tar_cell_types) {
   de_tab_per_ct <- de_tab_all %>%
     dplyr::filter(data_source == "pml_citeseq", celltype == pct, donors == "All") %>%
     tidyr::separate(comparison, into = c("comparison", "timepoint"), sep = "_") %>%
-    dplyr::filter(timepoint %in% c("BL")) %>%
+    dplyr::filter(timepoint %in% c("BL"), ! gene_symbol %in% chrom_xy_genes) %>%
     dplyr::select(p_val_adj, avg_log2FC, gene_symbol) %>%
-    dplyr::mutate(Signif. = dplyr::case_when(
-      p_val_adj < 0.05 & avg_log2FC < -0.25 ~ "Down",
-      p_val_adj < 0.05 & avg_log2FC > 0.25 ~ "Up",
-      TRUE ~ "Other"
-    ))
+    dplyr::mutate(Signif. = dplyr::case_when(p_val_adj <= 0.05 & avg_log2FC <= -0.25 ~ "Down", p_val_adj <= 0.05 & avg_log2FC >= 0.25 ~ "Up", TRUE ~ "Other"))
 
   volp <- ggplot() +
     geom_point(aes(x = avg_log2FC, y = -log10(p_val_adj), color = Signif.), de_tab_per_ct) +
@@ -362,100 +366,499 @@ for (pct in tar_cell_types) {
     theme_classic() +
     theme(legend.position = "top")
 
-  volp_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, stringr::str_remove_all(pct, " "), "Rs_vs_NR.BL.volcano_plot.pdf", sep = "."))
+  volp_save_to <- file.path(proj_dir, "outputs/analysis/deg/plots", paste("de_gene", per_omics, stringr::str_remove_all(pct, " "), "Rs_vs_NR.BL.volcano_plot.pdf", sep = "."))
   ggsave(volp_save_to, plot = volp, width = 4, height = 5)
 }
 
 
-# Gene ontology enrichment
-gotab_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".all_celltype.Rs_vs_NR.go_enrichment.csv"))
-if (file.exists(gotab_save_to)) {
-  go_tab <- fread(gotab_save_to)
-} else {
-  go_tab <- lapply(tar_cell_types, function(pct) {
-    gene_set_list <- de_fmt_tab %>%
-      dplyr::filter(celltype == pct, data_source == per_omics, p_val_adj < 0.05, abs(avg_log2FC) > 0.25, timepoint %in% c("BL", "3M")) %>%
-      dplyr::select(gene_symbol, direction, timepoint) %>%
-      dplyr::group_by(timepoint, direction) %>%
-      dplyr::summarise(gene_sets =  list(gene_symbol)) %>%
-      dplyr::mutate(gene_set_name = paste0(stringr::str_remove_all(timepoint, " "), " (", direction, ")")) %>%
-      dplyr::pull(gene_sets, gene_set_name)
+# DE genes replicated by RNA-seq
+plot_tab <- de_tab_all %>%
+  dplyr::filter(
+    donors == "All", comparison == "Rs.vs.NRs_BL",
+    data_source %in% c("pml_citeseq", "pml_rnaseq"),
+    pct.1 >= 0.05, pct.2 >= 0.05,
+    abs(avg_log2FC) > 0.01
+  ) %>%
+  dplyr::select(data_source, celltype, gene_symbol, direction, avg_log2FC, p_val, p_val_adj) %>%
+  tidyr::pivot_wider(id_cols = c(celltype, gene_symbol), names_from = c(data_source), values_from = c(direction, avg_log2FC, p_val, p_val_adj)) %>%
+  dplyr::mutate(Replication = dplyr::if_else(direction_pml_citeseq == direction_pml_rnaseq, "Replicated", "Not replicated")) %>%
+  dplyr::filter(!is.na(Replication))
 
-    go_tab <- lapply(names(gene_set_list), function(x, .gsl) {
-      gene_vec <- .gsl[[x]]
-      enrichGO(gene = gene_vec, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "ALL", readable = TRUE)@result %>%
-        dplyr::mutate(gene_set = x, label = paste0(x, " (n=", length(gene_vec), ")"))
-    }, .gsl = gene_set_list) %>%
-      Reduce(rbind, .) %>%
-      dplyr::mutate(bg_ratio_dec = lapply(.$BgRatio, function(x) eval(parse(text = x))) %>% unlist) %>%
-      dplyr::mutate(gene_ratio_dec = lapply(.$GeneRatio, function(x) eval(parse(text = x))) %>% unlist) %>%
-      dplyr::mutate(log2_odds_ratio = log2(gene_ratio_dec / bg_ratio_dec)) %>%
-      dplyr::mutate(celltype = pct)
-  }) %>%
-  Reduce(rbind, .)
+p <- ggplot(plot_tab) +
+  geom_point(aes(x = avg_log2FC_pml_citeseq, y = avg_log2FC_pml_rnaseq, color = Replication)) +
+  facet_wrap(~celltype, scales = "free") +
+  theme_classic()
+save_to <- file.path(plot_dir, "de_gene.replicated_at_BL.points.pdf")
+ggsave(save_to, plot = p, width = 10, height = 10)
 
-  fwrite(go_tab, gotab_save_to)
+
+dis_deg_tab <- de_tab_all %>%
+  dplyr::filter(donors == "All", comparison == "Rs.vs.NRs_BL", data_source == "pml_citeseq", p_val_adj < 0.05, abs(avg_log2FC) > 0.1, pct.1 > 0.05, pct.2 > 0.05) %>%
+  dplyr::select(celltype, gene_symbol, direction, p_val, avg_log2FC)
+
+val_deg_tab <- de_tab_all %>%
+  dplyr::filter(donors == "All", comparison == "Rs.vs.NRs_BL", data_source == "pml_rnaseq") %>%
+  dplyr::filter(p_val < 0.05) %>%
+  dplyr::select(celltype, gene_symbol, direction, p_val, avg_log2FC)
+
+rep_count_tab <- dis_deg_tab %>%
+  dplyr::left_join(val_deg_tab, by = c("celltype", "gene_symbol", "direction"), suffix = c(".citeseq", ".rnaseq")) %>%
+  dplyr::mutate(is_replicated = (!is.na(p_val.rnaseq)) & (avg_log2FC.citeseq * avg_log2FC.rnaseq > 0)) %>%
+  dplyr::group_by(celltype, direction) %>%
+  dplyr::summarise(n = n(), n_rep = sum(is_replicated)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(celltype = forcats::fct_reorder(celltype, -n)) %>%
+  dplyr::mutate(direction = factor(direction, levels = c("up", "dw")), timepoint = "BL")
+
+p <- ggplot(rep_count_tab) +
+  geom_col(aes(x = celltype, y = n, group = direction), fill = "gray", width = 0.8, position = position_dodge2(width = 0.75, preserve = "single")) +
+  geom_col(aes(x = celltype, y = n_rep, fill = direction), width = 0.8, position = position_dodge2(width = 0.75, preserve = "single")) +
+  geom_text(aes(x = celltype, y = n_rep, label = n_rep, group = direction), position = position_dodge2(width = 0.75, preserve = "single"), vjust = -0.2) +
+  geom_text(aes(x = celltype, y = n, label = n, group = direction), position = position_dodge2(width = 0.75, preserve = "single"), vjust = -0.2) +
+  labs(x = NULL, y = NULL, fill = "Responder vs non-responder") +
+  scale_fill_npg() +
+  theme_classic() +
+  facet_wrap(~timepoint, nrow = 1, strip.position = "right") +
+  theme(legend.position = "top", axis.text.y = element_text(size = 8), axis.text.x = element_text(angle = 45, hjust = 1), strip.background = element_blank())
+save_to <- file.path(plot_dir, "de_gene.replicated_at_BL.pdf")
+ggsave(save_to, plot = p, width = 4, height = 4.5)
+
+
+# DEG concordance dynamics compared to Rs vs NR at BL
+for (pct in c("CD8 T", "CD4 T", "NK", "Mono", "B")) {
+  deg_cordance_tab <- de_tab_all %>%
+    dplyr::filter(celltype == pct, data_source == "pml_citeseq", comparison %in% c("3M.vs.6W", "6W.vs.BL", "Rs.vs.NRs_BL"), donors %in% c("All", "Responder"), pct.1 > 0.1, pct.2 > 0.1) %>%
+    dplyr::select(gene_symbol, p_val_adj, avg_log2FC, comparison)
+  deg_orders <- deg_cordance_tab %>% dplyr::filter(comparison == "Rs.vs.NRs_BL", !gene_symbol %in% chrom_xy_genes) %>% dplyr::arrange(avg_log2FC) %>% dplyr::pull(gene_symbol)
+  deg_cordance_plot_tab <- deg_cordance_tab %>% dplyr::filter(gene_symbol %in% deg_orders) %>% dplyr::mutate(gene_symbol = factor(gene_symbol, levels = deg_orders), comparison = factor(comparison, c("Rs.vs.NRs_BL", "6W.vs.BL", "3M.vs.6W")))
+
+  hl_tab <- dplyr::filter(deg_cordance_plot_tab, p_val_adj < 0.05, abs(avg_log2FC) > 0.1)
+  p_scatter <- deg_cordance_plot_tab %>% ggplot() +
+    geom_hline(yintercept = 0, linewidth = 0.25) +
+    geom_point(aes(x = gene_symbol, y = avg_log2FC), color = "grey", size = 0.25, alpha = 0.5) +
+    geom_point(aes(x = gene_symbol, y = avg_log2FC), dplyr::filter(hl_tab, comparison == "Rs.vs.NRs_BL"), color = "darkred", size = 0.5, alpha = 0.75) +
+    geom_point(aes(x = gene_symbol, y = avg_log2FC), dplyr::filter(hl_tab, comparison == "6W.vs.BL"), color = "darkred", size = 0.5, alpha = 0.75) +
+    geom_point(aes(x = gene_symbol, y = avg_log2FC), dplyr::filter(hl_tab, comparison == "3M.vs.6W"), color = "darkred", size = 0.5, alpha = 0.75) +
+    scale_x_discrete(expand = c(unit(0.025, "npc"), unit(0.025, "npc"))) +
+    scale_color_manual(values = c("Y" = "darkred", "N" = "grey")) +
+    facet_grid(comparison ~ .) +
+    labs(x = "Genes order by log2FC", y = "Log2FC") +
+    theme_classic() +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+  p_scater_saveto <- file.path(plot_dir, paste0("de_gene.pml_citeseq.", stringr::str_remove(pct, " "), ".concordance_across_comparisons.pdf"))
+  ggsave(p_scater_saveto, plot = p_scatter, width = 7, height = 4)
 }
 
 
-# GO BP enrichment
-go_plot_tab <- go_tab %>%
-  dplyr::filter(ONTOLOGY %in% c("BP"), p.adjust < 0.05, gene_set %in% c("BL (dw)", "BL (up)")) %>%
-  dplyr::mutate(celltype = forcats::fct_relevel(celltype, c("CD8 T", "Mono", "CD4 T", "B", "NK"))) %>%
-  dplyr::mutate(gene_set = forcats::fct_relevel(gene_set, c("BL (up)", "BL (dw)"))) %>%
-  dplyr::arrange(celltype, desc(gene_set), Count) %>%
-  dplyr::mutate(ID = forcats::fct_inorder(ID)) %>%
-  dplyr::group_by(celltype, ID) %>%
-  dplyr::mutate(x_start = n() - dplyr::cur_group_id()) %>%
-  dplyr::ungroup()
+# Check the direction of DE genes
+# Expression dynamic patterns
+pct <- "CD8 T"
 
-go_sim_mat <- go_plot_tab %>% dplyr::pull(ID) %>% as.character() %>% unique() %>%
-  mgoSim(GO1 = ., GO2 = ., semData = hsGO, measure = "Rel", combine = NULL)
-go_term_sim_order <- colnames(go_sim_mat)[hclust(dist(go_sim_mat))$order]
+pbmc_int <- readRDS(file.path(proj_dir, "outputs/analysis/integrated/objects/pml_citeseq.rds"))
+tar_features <- deg_cordance_plot_tab %>% dplyr::filter(p_val_adj < 0.05, comparison == "Rs.vs.NRs_BL", abs(avg_log2FC) > 0.2) %>% dplyr::pull(gene_symbol)
+norm_avg_expr_tab <- AverageExpression(pbmc_int, assay = "SCT", features = tar_features, group.by = c("Response", "Timepoint"))[["SCT"]] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("gene_symbol") %>%
+  dplyr::mutate(expr_pattern = apply(., 1, function(x) paste0(ifelse(x["Non-responder_BL"] < x["Responder_BL"], "+", "-"), ifelse(x["Responder_BL"] < x["Responder_6W"], "+", "-"), ifelse(x["Responder_6W"] < x["Responder_3M"], "+", "-")))) %>%
+  tidyr::pivot_longer(-c(gene_symbol, expr_pattern), names_to = "SampleGroup", values_to = "AverageExpression") %>%
+  dplyr::filter(!SampleGroup %in% c("Non-responder_3M"), !gene_symbol %in% c("MALAT1", "FTH1", "FTL")) %>%
+  dplyr::mutate(AverageExpression = log10(AverageExpression + 1) %>% scale() %>% as.numeric()) %>%
+  dplyr::mutate(SampleGroup = factor(SampleGroup, levels = c("Non-responder_BL", "Responder_BL", "Responder_6W", "Responder_3M"))) %>%
+  dplyr::mutate(expr_pattern = factor(expr_pattern, levels = c("+++", "++-", "---", "-++", "+--", "--+", "-+-", "+-+")))
+
+hc_method <- "ward.D2"; dst_method <- "euclidean"; ct_k <- 15
+gene_symbol_hc <- norm_avg_expr_tab %>%
+  tidyr::pivot_wider(names_from = "SampleGroup", values_from = "AverageExpression") %>%
+  tibble::column_to_rownames("gene_symbol") %>%
+  as.matrix() %>%
+  dist(method = dst_method) %>%
+  hclust(method = hc_method)
+gene_order <- gene_symbol_hc$labels[gene_symbol_hc$order]
+
+norm_avg_expr_plot_tab <- norm_avg_expr_tab %>% dplyr::mutate(gene_symbol = factor(gene_symbol, gene_order))
+p <- ggplot(norm_avg_expr_plot_tab) +
+  geom_tile(aes(x = SampleGroup, y = gene_symbol, fill = AverageExpression)) +
+  labs(x = NULL, y = "Gene symbol", fill = "Avg. expression") +
+  scale_fill_gradient2(low = rbgc[11], mid = rbgc[6], high = rbgc[1]) +
+  facet_grid(expr_pattern ~ ., scales = "free_y", space = "free_y",) +
+  theme_classic() +
+  theme(legend.position = "top", panel.spacing = unit(0.002, "npc"), axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_text(angle = -30, hjust = 0, vjust = 1))
+plot_save_to <- file.path(plot_dir, paste0("de_gene.pml_citeseq.", stringr::str_remove(pct, " "), ".dynamics_patterns.pdf"))
+ggsave(plot_save_to, plot = p, width = 4.5, height = 9.75)
+
+# tar_cells <- pbmc_int@meta.data %>% as.data.frame() %>% dplyr::filter(Response != "Non-responder" | (Response == "Non-responder" & Timepoint == "BL"), predicted.celltype.l1 == pct) %>% rownames()
+# Idents(pbmc_int) <- paste(pbmc_int$Response, pbmc_int$Timepoint, sep = "_")
+# p <- DotPlot(pbmc_int[, tar_cells], features = tar_features, assay = "SCT") +
+#   scale_y_discrete(limits = c("Non-responder_BL", "Responder_BL", "Responder_6W", "Responder_3M")) +
+#   scale_color_gradient2(low = rbgc[11], mid = rbgc[6], high = rbgc[1]) +
+#   coord_flip() +
+#   RotatedAxis()
+# example_feature_plot_save_to <- file.path(plot_dir, paste0("de_gene.pml_citeseq.", stringr::str_remove(pct, " "), ".concordance_across_comparisons.example_features.same_direction.pdf"))
+# ggsave(example_feature_plot_save_to, plot = p, width = 5, height = 12)
+
+
+# GSEA analysis
+ref_de_genes <- de_tab_all %>%
+  dplyr::filter(data_source == "pml_citeseq", donors == "All", p_val_adj < 0.1, abs(avg_log2FC) > 0.1, ! gene_symbol %in% chrom_xy_genes) %>%
+  dplyr::group_by(celltype) %>%
+  dplyr::summarise(gene_set = list(gene_symbol)) %>%
+  dplyr::mutate(gene_set_name = stringr::str_remove_all(celltype, " ")) %>%
+  dplyr::pull(gene_set, gene_set_name)
+
+for (pct in c("Mono", "CD4 T", "CD8 T", "NK", "B")) {
+  for (per_cmp in c("3M.vs.BL", "6W.vs.BL", "3M.vs.6W")) {
+    dym_de_genes <- de_tab_all %>%
+      dplyr::filter(data_source == "pml_citeseq", donors == "Responder", comparison == per_cmp, p_val_adj < 0.05, abs(avg_log2FC) > 0.1, pct.1 > 0.05, pct.2 > 0.05, celltype == pct, ! gene_symbol %in% chrom_xy_genes) %>%
+      dplyr::pull(avg_log2FC, gene_symbol) %>%
+      sort(decreasing = TRUE)
+
+    per_gsea_res <- fgsea(ref_de_genes, dym_de_genes, minSize = 10, maxSize = 1000, eps = 0.0)
+    gsea_table_save_to <- file.path(plot_dir, "GSEA", paste0("deg.", stringr::str_remove_all(pct, " "), ".", per_cmp, "_dym_deg_in_BL.pdf"))
+    pdf(gsea_table_save_to, width = 7, height = 3.5)
+    plotGseaTable(ref_de_genes, dym_de_genes, per_gsea_res, colwidths = c(2, 3, 0.8, 1.2, 1.2), gseaParam = 0.5)
+    dev.off()
+  }
+}
+
+
+# Gene expression alteration pattern
+exp_alt_pat_save_to <- file.path(plot_dir, paste0("de_gene.", per_omics, ".all_celltype.Rs_vs_NR.BL.expression_alteration_pattern.v3.pdf"))
+if (!file.exists(exp_alt_pat_save_to)) {
+  cat("[I]: File exists ... \n")
+} else {
+  hc_method <- "ward.D2"; dst_method <- "euclidean"; ct_k <- 10
+  selected_features <- de_tab_all %>%
+    dplyr::filter(!(gene_symbol %in% chrom_xy_genes), p_val_adj <= 0.05, abs(avg_log2FC) >= 0.3, pct.2 >= 0.05, pct.1 >= 0.05, donors == "All", data_source == per_omics) %>%
+    dplyr::filter(comparison %in% "Rs.vs.NRs_BL") %>%
+    dplyr::pull(gene_symbol) %>%
+    unique()
+
+  exp_alt_pat_tab <- de_tab_all %>%
+    dplyr::filter(gene_symbol %in% selected_features, donors == "All", data_source == per_omics, comparison == "Rs.vs.NRs_BL") %>%
+    dplyr::select(gene_symbol, celltype, p_val_adj, avg_log2FC, direction)
+
+  plot_tab <- exp_alt_pat_tab %>%
+    dplyr::select(gene_symbol, celltype, avg_log2FC) %>%
+    tidyr::pivot_wider(names_from = "celltype", values_from = "avg_log2FC") %>%
+    dplyr::mutate(dplyr::across(-gene_symbol, ~dplyr::if_else(is.na(.x), 0, .x))) %>%
+    tibble::column_to_rownames("gene_symbol") %>%
+    as.matrix()
+
+  set.seed(31415)
+  idx_five_mf <- c("CXCL2", "CXCL3", "CXCL8", "IFITM3", "IFI44L", "MARCH1")
+  idx_seven_mf <- c("CD52", "CD8A", "CD8B", "CD226",  "ITGA4", "GZMB", "AKT3")
+  idx_eight_mf <- c("IFNG", "IFITM2", "LAIR2", "TGFBR3", "ITK", "TNF", "PRMT2", "HOPX", "ZEB2")
+  idx_ten_mf <- c("GNLY", "GZMH", "ITGB1", "CD2", "CCL4")
+  mark_features <- c(idx_five_mf, idx_seven_mf, idx_eight_mf, idx_ten_mf)
+  mark_colors <- c(
+    rep("darkgreen", length(idx_five_mf)), rep("darkred", length(idx_seven_mf)),
+    rep("darkblue", length(idx_eight_mf)), rep("orange", length(idx_ten_mf)))
+  mark_idx <- match(mark_features, rownames(plot_tab))
+
+  col_fun <- colorRamp2(c(-1, 0, 1), c("#3C5488B2", "white", "#E64B35B2"))
+
+  panel_colors <- c("gray", "gray", "gray", "gray", "darkgreen", "darkblue", "darkred", "gray", "gray", "orange")
+  left_annotation <- rowAnnotation(
+    f = anno_block(gp = gpar(fill = panel_colors), labels_gp = gpar(col = "white", fontsize = 10))
+  )
+  right_annotation <- rowAnnotation(
+    b = anno_mark(at = mark_idx, labels = mark_features, labels_gp = gpar(fontsize = 10, fontface = "italic", col = mark_colors))
+  )
+
+  pdf(exp_alt_pat_save_to, width = 5, height = 11)
+  heat_map <- Heatmap(
+    plot_tab, col = col_fun, name = "log2FC",
+    cluster_columns = FALSE, cluster_rows = TRUE, show_row_names = FALSE, row_km = 10,
+    left_annotation = left_annotation, right_annotation = right_annotation
+  )
+  heat_map <- heat_map %>% draw()
+  rcl.list <- row_order(heat_map)
+  dev.off()
+}
+
+
+# Functional enrichment, gene ontology enrichment
+go_tab_save_to <- file.path(table_dir, paste0("de_gene.all_celltype.go_enrichment.csv"))
+if (file.exists(go_tab_save_to)) {
+  cat("[W]: Loading from disk ...", go_tab_save_to, "\n")
+  go_tab <- fread(go_tab_save_to)
+} else {
+  de_gene_list <- de_tab_all %>% dplyr::filter(p_val_adj <= 0.05, abs(avg_log2FC) >= 0.1, pct.2 >= 0.05, pct.1 >= 0.05, !(gene_symbol %in% chrom_xy_genes)) %>% 
+    dplyr::select(data_source, celltype, comparison, direction, gene_symbol) %>%
+    dplyr::group_by(data_source, celltype, comparison, direction) %>%
+    dplyr::summarise(gene_list = list(gene_symbol)) %>%
+    dplyr::mutate(gene_list_name = paste(data_source, celltype, direction, comparison, sep = "_") %>% stringr::str_remove_all("pml_| ")) %>%
+    dplyr::pull(gene_list, gene_list_name)
+
+  go_tab <- lapply(names(de_gene_list), function(x, .gsl) {
+    gene_vec <- .gsl[[x]]
+    tryCatch({
+      ego <- enrichGO(gene_vec, org.Hs.eg.db, "SYMBOL", "ALL")
+      dplyr::mutate(ego@result, gene_set = x, n_genes = length(gene_vec)) %>%
+        tidyr::separate(gene_set, into = c("data_source", "celltype", "direction", "comparison"), sep = "_", extra = "merge") %>%
+        dplyr::mutate(data_source = paste0("pml_", data_source))
+    }, error = function(e) { cat(e$message, paste(x, "failed\n")); NULL })
+  }, .gsl = de_gene_list) %>%
+    Reduce(rbind, .)
+
+  fwrite(go_tab, go_tab_save_to)
+}
+
+# Gene ontology enrichment and similarity
+# 'arg' should be one of “Wang”, “Resnik”, “Rel”, “Jiang”, “Lin”, “TCSS”
+go_sim_mat <- go_tab %>%
+  dplyr::filter(data_source == per_omics, comparison == "Rs.vs.NRs_BL", ONTOLOGY == "BP", p.adjust <= 0.05, Count >= 3) %>%
+  dplyr::pull(ID) %>%
+  as.character() %>%
+  unique() %>%
+  mgoSim(GO1 = ., GO2 = ., semData = hsGO, measure = "Rel", combine = NULL) %>%
+  (function(mat) { mat[is.na(mat)] <- 0; mat })
+
+col_fun <- colorRamp2(c(0, 0.75), c("#90D5FFCC", "darkblue"))
+go_sim_p_saveto <- file.path(plot_dir, paste0("de_gene.", per_omics, ".all_celltype.BP.go_sim_tree.v3.pdf"))
+pdf(go_sim_p_saveto, width = 8, height = 7)
+heat_map <- Heatmap(
+  go_sim_mat, col = col_fun, name = "GO similarity",
+  cluster_rows = TRUE, show_row_names = FALSE,# row_km = 3,
+  cluster_columns = TRUE, show_column_names = FALSE#, column_km = 3
+  #left_annotation = left_annotation, right_annotation = right_annotation
+) %>% draw()
+dev.off()
+
+
+dist_method <- "manhattan"; cls_method <- "ward.D2"
+go_dist <- dist(go_sim_mat, dist_method)
+go_cluster <- hclust(go_dist, cls_method)
+go_term_sim_order <- go_cluster$labels[go_cluster$order]
 go_sim_mat <- go_sim_mat %>% as.data.frame() %>%
   dplyr::mutate(ID1 = rownames(.)) %>%
   tidyr::pivot_longer(cols = -ID1, names_to = "ID2", values_to = "similarity") %>%
   dplyr::mutate(similarity = dplyr::if_else(ID1 == ID2, 1.0, similarity)) %>%
   dplyr::mutate(ID1 = factor(ID1, levels = go_term_sim_order)) %>%
-  dplyr::mutate(ID2 = factor(ID2, levels = go_term_sim_order))
+  dplyr::mutate(ID2 = factor(ID2, levels = go_term_sim_order)) %>%
+  dplyr::mutate(ID_order = as.integer(ID1))
 
-go_cnn_tab <- go_plot_tab %>%
-  dplyr::select(celltype, ID, x_start) %>%
-  dplyr::mutate(x_end = match(ID, go_term_sim_order)) %>%
-  dplyr::mutate(x_end = shrink_to_range(x_end, x_start)) %>%
-  tidyr::pivot_longer(cols = c(x_start, x_end), names_to = "x_position", values_to = "index") %>%
-  dplyr::mutate(celltype = forcats::fct_relevel(celltype, rev(c("CD8 T", "Mono", "CD4 T", "B", "NK")))) %>%
-  dplyr::mutate(x_position = factor(x_position, levels = c("x_start", "x_end"))) %>%
-  dplyr::mutate(y_groups = paste0(celltype, ", ", ID))
+go_term_order_tab <- go_sim_mat %>% dplyr::select(GO_ID = ID1, GO_ID_index = ID_order) %>% dplyr::distinct()
 
-go_enr_p <- ggplot(go_plot_tab) +
-  geom_tile(aes(x = gene_set, y = ID, fill = Count)) +
-  scale_fill_gradient(low = "gray", high = "darkblue", na.value = "gray") +
-  labs(x = NULL, y = NULL, fill = "Nr. of Genes") +
-  facet_grid(celltype ~ ., scales = "free_y", space = "free", switch = "y") +
+ct_k <- 5
+go_cluster_tree <- cutree(go_cluster, k = ct_k)
+go_cluster_hc <- as.dendrogram(go_cluster)
+go_cluster_dd <- dendro_data(go_cluster_hc, type = "rectangle")
+
+go_example_hc <- data.frame(cluster = factor(go_cluster_tree)) %>% tibble::rownames_to_column("label")
+go_cluster_dd[["labels"]] <- merge(go_cluster_dd[["labels"]], go_example_hc, by="label")
+go_cluster_tree_rect <- go_cluster_dd[["labels"]] %>% dplyr::group_by(cluster) %>% dplyr::summarise(Y.1 = min(x) - 0.5, Y.2 = max(x) + 0.5)
+go_cluster_tree_xmax <- mean(go_cluster$height[length(go_cluster$height)-((ct_k-2):(ct_k-1))]) %>% sqrt()
+
+go_pat_tab <- selected_go_tab %>%
+  dplyr::select(ID, celltype, direction, Count) %>%
+  dplyr::mutate(ID = factor(ID, levels = go_term_sim_order), Count = dplyr::if_else(direction == "up", Count, -Count)) %>%
+  dplyr::mutate(celltype = factor(celltype, levels = c("Mono", "CD8T", "CD4T", "NK", "B")))
+
+go_cls_p <- ggplot() +
+  geom_segment(aes(x = sqrt(y), y = x, xend = sqrt(yend), yend = xend), data = segment(go_cluster_dd), linewidth = 0.1) +
+  geom_rect(aes(ymin = Y.1, ymax = Y.2, xmin = - 0.3 * go_cluster_tree_xmax, xmax = go_cluster_tree_xmax), data = go_cluster_tree_rect, color = "orange", alpha = 0.15, fill = NA) +
+  geom_text(aes(x = -0.15 * go_cluster_tree_xmax, y = (Y.1 + Y.2) / 2, label = cluster), data = go_cluster_tree_rect, hjust = 0.5, size = 4, color = rbgc[11]) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_reverse(expand = c(0.02, 0.02)) +
+  theme_void()
+
+go_hm_p <- ggplot() +
+  geom_tile(aes(x = ID1, y = ID2, fill = similarity), data = go_sim_mat) +
+  scale_fill_gradient(low = "#90D5FFEE", high = "darkblue", na.value = "gray99") +
+  labs(fill = "Similarity", x = NULL, y = NULL) +
+  scale_y_discrete(expand = c(0, 0)) +
+  scale_x_discrete(expand = c(0, 0)) +
   theme_classic() +
-  theme(legend.position = "left", axis.ticks.y = element_blank(), axis.text.y = element_blank(), axis.text.x = element_text(angle = 90, vjust = 0.5, size = 12), strip.background = element_blank(), strip.placement = "outside", panel.spacing = unit(0.25, "mm"))
+  theme(legend.position = "left", axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_blank())
 
-go_sim_p <- ggplot(go_sim_mat) +
+go_pat_p <- ggplot() +
+  geom_tile(aes(x = ID, y = celltype, fill = Count), data = go_pat_tab) +
+  facet_grid(direction ~ ., space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = rbgc[11], mid = rbgc[6], high = rbgc[1]) +
+  scale_y_discrete(expand = c(0, 0)) +
+  scale_x_discrete(expand = c(0, 0)) +
+  labs(fill = "Nr. of genes", y = NULL, x = NULL) +
+  theme(legend.position = "right", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.background = element_blank(), strip.placement = "outside")
+
+go_sim_p <- go_pat_p + go_hm_p + go_cls_p + plot_layout(guides = "collect", design = c(area(1, 1, 1, 6), area(2, 1, 4, 6), area(2, 7, 4, 7)))
+go_sim_p_save_to <- file.path(plot_dir, paste0("de_gene.", per_omics, ".all_celltype.BP.go_sim_tree.v2.pdf"))
+ggsave(go_sim_p_save_to, go_sim_p, width = 7, height = 6.15)
+
+
+# GO graph
+go_graphml_saveto <- "/home/zzhang/Documents/projects/resources/GeneOntology/go.graphml"
+go_graph <- read.graph(go_graphml_saveto, format = "graphml")
+
+selected_go_terms <- go_example_hc %>% dplyr::filter(cluster %in% c("1")) %>% dplyr::pull(label)
+vs_idx <- which(as_ids(V(go_graph)) %in% selected_go_terms)
+sub_go_graph <- subgraph(go_graph, vs_idx)
+shared_selected_node <- c("viral process", "regulation of cell-cell adhesion", "response to interleukin−1", "regulation of cell killing", "cell killing", "integrin−mediated signaling pathway", "cellular defense response") #, "leukocyte proliferation", "regulation of cell-cell adhesion")
+monocyte_selected_node <- c("response to tumor necrosis factor", "cytokine−mediated signaling pathway")
+sub_go_graph_tbl <- as_tbl_graph(sub_go_graph) %>%
+  tidygraph::activate(edges) %>%
+  tidygraph::mutate(relationship = ifelse(relationship == "NA" & is_a, "is_a", relationship)) %>%
+  tidygraph::activate(nodes) %>%
+  # tidygraph::filter(!node_is_isolated()) %>%
+  tidygraph::mutate(centrality = centrality_pagerank()) %>%
+  # tidygraph::mutate(node_label = ifelse(go_term %in% c(shared_selected_node, monocyte_selected_node), go_term, NA))
+  tidygraph::mutate(node_label = ifelse(centrality > 0.025, go_term, ""))
+  # %>% tidygraph::mutate(node_label = stringr::str_remove(node_label, "(negative |positive |)regulation of "))
+
+set.seed(31415)
+# go_graph_plot <- ggraph(sub_go_graph_tbl, layout = "igraph", algorithm = "stress") +
+go_graph_plot <- ggraph(sub_go_graph_tbl, "fr") +
+  geom_node_point(aes(size = centrality), alpha = 0.75, color = "black") +
+  geom_edge_link(aes(edge_colour = factor(relationship)), start_cap = circle(0.005, 'npc'), end_cap = circle(0.01, 'npc'), arrow = grid::arrow(length = unit(0.01, 'npc'), type="closed")) +
+  geom_node_label(aes(label = node_label), segment.linetype = "dotted", fill = "#EEEEEE50", color = "black", size = 5, repel = TRUE, segment.curvature = -0.2, segment.ncp = 2, segment.angle = 30, min.segment.length = 0, max.overlaps = Inf) +
+  scale_edge_color_manual(values = c(is_a = "gray90", has_a = "gray90", part_of = "purple", regulates = "orange", negatively_regulates = "blue", positively_regulates = "red")) +
+  scale_size(range = c(0.5, 6)) +
+  labs(edge_colour = "Relationship", size = "PageRank") +
+  theme(legend.position = "right", panel.background = element_blank(), legend.box.background = element_blank())
+go_graph_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg/plots", paste0("de_gene.", per_omics, ".all_celltype.BP.go_graph.v2.pdf"))
+ggsave(go_graph_plot_save_to, go_graph_plot, width = 8.75, height = 7)
+
+
+# Number of highly variable genes
+citeseq_obj <- readRDS(file.path(proj_dir, "outputs/analysis/integrated/objects/pml_citeseq.rds"))
+tar_features <- rownames(citeseq_obj) %>% purrr::discard(~.x %in% c("HBB", "HBA1", "HBA2"))
+
+citeseq_obj <- citeseq_obj[tar_features, ]
+DefaultAssay(citeseq_obj) <- "RNA"
+citeseq_obj <- FindVariableFeatures(citeseq_obj, selection.method = "vst", nfeatures = 5000)
+
+top_genes <- head(VariableFeatures(citeseq_obj), 40)
+p <- VariableFeaturePlot(citeseq_obj, selection.method = "vst")
+p <- LabelPoints(plot = p, points = top_genes, repel = TRUE, log = FALSE, max.overlaps = Inf)
+p_save_to <- file.path(plot_dir, "highly_variable_genes.citeseq.pdf")
+ggsave(p_save_to, plot = p, width=9)
+
+
+# Functional enrichment of HVGs.
+selected_features <- VariableFeatures(citeseq_obj) %>% head(2000)
+ego_bp <- enrichGO(selected_features, org.Hs.eg.db, "SYMBOL", "BP")
+ego_cc <- enrichGO(selected_features, org.Hs.eg.db, "SYMBOL", "CC")
+ego_mf <- enrichGO(selected_features, org.Hs.eg.db, "SYMBOL", "MF")
+
+p_bp <- barplot(ego_bp, showCategory = 12, title="Biological processes", label_format = 40)
+p_cc <- barplot(ego_cc, showCategory = 12, title="Cellular components", label_format = 40)
+p_mf <- barplot(ego_mf, showCategory = 12, title="Molecular functions", label_format = 40)
+
+p <- p_bp / p_cc / p_mf + plot_layout(guides="auto")
+plot_save_to <- file.path(plot_dir, "highly_variable_genes.gene_ontology.citeseq.pdf")
+ggsave(plot_save_to, plot = p, height = 15)
+
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# similarity
+go_sim_p <- ggplot(go_sim_plot_mat) +
   geom_tile(aes(x = ID1, y = ID2, fill = similarity)) +
-  scale_fill_gradient(low = "white", high = "darkred") +
+  scale_fill_gradient(low = rbgc[6], high = rbgc[11]) +
   labs(fill = "GO similarity", x = NULL, y = NULL) +
   theme_classic() +
   theme(legend.position = "left", axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_blank())
 
-go_cnn_p <- ggplot(go_cnn_tab) +
-  geom_path(aes(x = x_position, y = index, group = y_groups, color = celltype), linewidth = .05) +
-  labs(color = "Cell type") +
-  theme_void() +
-  scale_y_continuous(expand = c(0, 0))
-
-go_p <- go_enr_p + plot_spacer() + go_cnn_p + plot_spacer() + go_sim_p + plot_layout(widths = c(1, -.25, 1, -.25, 7), guides = "collect") & theme(plot.margin = unit(c(0.01, 0, 0.01, 0), "npc"))
-go_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".all_celltype.BP.go_enrichment.pdf"))
-ggsave(go_plot_save_to, go_p, width = 7, height = 5.5)
+go_p <- go_enr_p + go_sim_p + plot_layout(widths = c(1, 2), guides = "collect") & theme(plot.margin = unit(c(0.01, 0, 0.01, 0), "npc"))
+go_plot_save_to <- file.path(plot_dir, paste0("de_gene.", per_omics, ".all_celltype.BP.go_enrichment.pdf"))
+ggsave(go_plot_save_to, go_p, width = 8, height = 5.5)
 
 
+selected_go_tab <- go_tab %>%
+  dplyr::filter(ID %in% selected_go_terms, Count >= 3, gene_set %in% c("BL (dw)", "BL (up)")) %>%
+  dplyr::group_by(celltype) %>%
+  dplyr::slice_min(order_by = p.adjust, n = 1000) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Description = stringr::str_trunc(Description, 64)) %>%
+  dplyr::mutate(Description = forcats::fct_reorder2(Description, log10(p.adjust), celltype))
+
+p <- ggplot(selected_go_tab) +
+  geom_point(aes(x = celltype, y = Description, size = Count, color = p.adjust)) +
+  scale_color_gradient(high = rbgc[5], low = rbgc[1]) +
+  facet_wrap(~gene_set) +
+  theme_bw()
+selected_go_enr_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg/plots", paste0("de_gene.", per_omics, ".all_celltype.BP.go_enrichment.selected.pdf"))
+ggsave(selected_go_enr_plot_save_to, p, width = 7.5, height = 20)
 
 
+
+# Dynamics along time
+# Dynamic gene list
+dym_deg_tab <- de_tab_all %>%
+  dplyr::filter(donors == "Responder", p_val_adj < 0.05, abs(avg_log2FC) > 0.25, comparison != "3M.vs.BL", pct.1 > 0.05, pct.2 > 0.05, data_source == "pml_citeseq") %>%
+  dplyr::group_by(comparison, celltype)
+
+dym_deg_list <- dym_deg_tab %>%
+  dplyr::summarise(gene_set = list(gene_symbol)) %>%
+  dplyr::mutate(gene_set_name = paste0(comparison, "(", stringr::str_remove_all(celltype, " "), ")")) %>%
+  dplyr::pull(gene_set, gene_set_name)
+
+dym_deg_list %>% lapply(length) %>% unlist() %>% sort
+
+# Interaction of dynamics DE genes
+comb_mat <- dym_deg_list %>% list_to_matrix() %>% make_comb_mat() %>% `[`(comb_size(.) >= 5)
+gene_upset_save_to <- file.path(proj_dir, "outputs/analysis/deg/plots", paste0("de_gene.", per_omics, ".dynamics.upset_plot.pdf")) %>% stringr::str_remove_all(" ")
+pdf(gene_upset_save_to, width = 8, height = 3.75)
+UpSet(comb_mat, top_annotation = upset_top_annotation(comb_mat, add_numbers = TRUE), left_annotation = upset_left_annotation(comb_mat, add_numbers = TRUE)) %>% draw()
+dev.off()
+
+
+# Expression pattern of CD8+ T cells
+pbmc_int <- readRDS(file.path(object_dir, "pml_citeseq.rds"))
+tar_cells <- pbmc_int@meta.data %>%
+  dplyr::filter(Response == "Responder", predicted.celltype.l1 == "CD8 T") %>%
+  rownames()
+
+expr_pattern_tab <- de_tab_all %>%
+  dplyr::filter(donors == "Responder", p_val_adj < 0.05, celltype == "CD8 T", data_source == "pml_citeseq", abs(avg_log2FC) >= 0.25, pct.1 > 0.1, pct.2 > 0.1) %>%
+  dplyr::mutate(direction = ifelse(avg_log2FC > 0, "+", "-")) %>%
+  dplyr::mutate(comparison = factor(comparison, levels = c("6W.vs.BL", "3M.vs.6W", "3M.vs.BL"))) %>%
+  dplyr::group_by(gene_symbol) %>%
+  dplyr::arrange(comparison) %>%
+  dplyr::summarise(
+    comparison_order = paste(comparison, collapse = "|"),
+    expression_pattern = dplyr::cur_data() %>% dplyr::mutate(direction = dplyr::if_else(avg_log2FC > 0, "+", "-")) %>% dplyr::pull(direction) %>% paste(collapse = ""),
+    expression_pattern = dplyr::case_when(expression_pattern == "---" ~ "Dw", expression_pattern == "+++" ~ "Up", T ~ "Mixed"),
+    expression_pattern = factor(expression_pattern, levels = c("Up", "Dw", "Mixed"))
+  )
+
+tar_features <- expr_pattern_tab$gene_symbol
+norm_avg_expr_tab <- pbmc_int[, tar_cells] %>%
+  AverageExpression(features = tar_features, group.by = "Timepoint", assay = "SCT") %>%
+  `$`(SCT) %>%
+  as.data.frame() %>%
+  dplyr::mutate(gene_symbol = rownames(.)) %>%
+  dplyr::relocate(gene_symbol)
+
+exp_clusters <- hclust(dist(as.matrix(norm_avg_expr_tab[, -1])), method = "ward.D2")
+gene_order <- exp_clusters$labels[exp_clusters$order]
+
+expr_pat_plot_tab <- norm_avg_expr_tab %>%
+  dplyr::left_join(expr_pattern_tab, by = "gene_symbol") %>%
+  dplyr::select(-c(comparison_order)) %>%
+  dplyr::group_by(expression_pattern) %>%
+  dplyr::slice_head(n = 20) %>%
+  tidyr::pivot_longer(-c(gene_symbol, expression_pattern), names_to = "Timepoint", values_to = "AverageExpression") %>%
+  dplyr::mutate(gene_symbol = factor(gene_symbol, levels = gene_order)) %>%
+  dplyr::arrange(gene_symbol)
+
+expr_pat_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".dynamics.expression_pattern_heatmap.pdf"))
+expr_pat_plot <- ggplot(expr_pat_plot_tab) +
+  geom_tile(aes(x = gene_symbol, y = Timepoint, fill = AverageExpression)) +
+  scale_fill_gradientn(name = "Avg. exp.", colors = rev(rbgc), limits = c(-10, 10)) +
+  # scale_x_discrete(breaks = c("CD2", "ITGB1"), labels = c("CD2", "ITGB1")) +
+  labs(x = NULL, y = NULL) +
+  facet_grid(. ~ expression_pattern, scales = "free_x", space = "free_x") +
+  theme_classic() +
+  theme(legend.position = "top", axis.line = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"), panel.spacing = unit(.005, "npc"))
+ggsave(expr_pat_plot_save_to, plot = expr_pat_plot, width = 6, height = 3.5)
+
+
+# Functional enrichment of DEGs at baseline
+plot_tab <- go_tab %>%
+  dplyr::filter(comparison == "Rs.vs.NRs_BL", data_source == "pml_citeseq", p.adjust <= 0.05, Count >= 3) %>%
+  dplyr::group_by(celltype, ONTOLOGY) %>%
+  dplyr::slice_min(order_by = pvalue, with_ties = FALSE, n = 5)
 
 
 # ----------------------------------------------------------
@@ -491,242 +894,108 @@ for (pct in tar_cell_types) {
   go_sim_mat[is.na(go_sim_mat)] <- 0
 
   col_fun <- colorRamp2(c(0, max(go_sim_mat)), c("gray95", "red"))
-  go_sim_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".", stringr::str_remove_all(pct, " "), ".go_sim_mat.pdf"))
+  go_sim_plot_save_to <- file.path(plot_dir, paste0("de_gene.", per_omics, ".", stringr::str_remove_all(pct, " "), ".go_sim_mat.pdf"))
   pdf(go_sim_plot_save_to, width = 8.5, height = 8)
-  Heatmap(go_sim_mat, column_split = go_split, row_split = go_split, col = col_fun)# , top_annotation = top_ann)
+  Heatmap(go_sim_mat, column_split = go_split, row_split = go_split, col = col_fun) %>% draw() # , top_annotation = top_ann)
   dev.off()
-
-  # # GO similarity score
-  # go_simscore_mat <- go_sel_tab$gene_set %>% unique %>% permutations(4, 2, v = ., repeats.allowed = TRUE) %>% as.data.frame() %>% apply(1, function(x, tab) {
-  #   id_set_1 <- tab %>% dplyr::filter(gene_set == x[1]) %>% dplyr::pull(ID)
-  #   id_set_2 <- tab %>% dplyr::filter(gene_set == x[2]) %>% dplyr::pull(ID)
-  #   go_sim_score <- mgoSim(id_set_1, id_set_2, semData = hsGO, measure = "Jiang", combine = "BMA")
-  #   data.frame(set_1 = x[1], set_2 = x[2], GO_SimScore = go_sim_score)
-  # }, tab = go_sel_tab) %>%
-  #   Reduce(rbind, .) %>%
-  #   tidyr::pivot_wider(names_from = set_2, values_from = GO_SimScore) %>%
-  #   tibble::column_to_rownames("set_1") %>%
-  #   as.matrix()
-  # save_to <- file.path(proj_dir, "outputs/analysis/deg", paste0("de_gene.", per_omics, ".", stringr::str_remove_all(pct, " "), ".go_sim_score.pdf"))
-  # pdf(save_to, width = 4.5, height = 4)
-  # Heatmap(go_simscore_mat, col = col_fun)# , top_annotation = top_ann)
-  # dev.off()
 }
 
 
 # UpSet plot to show overlap of DE genes between responders and non-responders at each time point per cell type.
-for (pct in tar_cell_types) {
-  # pct <- "CD4 T"
-  selected_tab <- de_tab_all %>%
-    dplyr::filter(celltype == pct, data_source == per_omics, donors == "Responder", p_val_adj < 0.05, abs(avg_log2FC) > 0.25) %>%
-    dplyr::select(gene_symbol, direction, comparison)
+go_tab <- NULL
+go_tab_save_to <- file.path(table_dir, paste("de_gene", per_omics, pct, "timepoint_comparison.go_enrichment.csv", sep = ".")) %>% stringr::str_remove_all(" ")
+if (file.exists(go_tab_save_to)) {
+  cat(paste("Reading", go_tab_save_to, "...\n"))
+  go_tab <- fread(go_tab_save_to) %>% rbind(go_tab)
+} else {
+  for (pct in tar_cell_types) {
+    # pct <- "CD8 T"
+    selected_tab <- de_tab_all %>%
+      dplyr::filter(celltype == pct, data_source == per_omics, donors == "Responder", p_val_adj < 0.05, abs(avg_log2FC) > 0.25) %>%
+      dplyr::select(gene_symbol, direction, comparison)
 
-  if (nrow(selected_tab) == 0) { next }
-  tryCatch({
-    gene_set_list <- selected_tab %>%
-      (function(tab) {
-        list(
-          `6W.vs.BL (up)` = tab %>% dplyr::filter(direction == "up", comparison == "6W.vs.BL") %>% dplyr::pull(gene_symbol),
-          `3M.vs.6W (up)` = tab %>% dplyr::filter(direction == "up", comparison == "3M.vs.6W") %>% dplyr::pull(gene_symbol),
-          `3M.vs.BL (up)` = tab %>% dplyr::filter(direction == "up", comparison == "3M.vs.BL") %>% dplyr::pull(gene_symbol),
-          `6W.vs.BL (dw)` = tab %>% dplyr::filter(direction == "dw", comparison == "6W.vs.BL") %>% dplyr::pull(gene_symbol),
-          `3M.vs.6W (dw)` = tab %>% dplyr::filter(direction == "dw", comparison == "3M.vs.6W") %>% dplyr::pull(gene_symbol),
-          `3M.vs.BL (dw)` = tab %>% dplyr::filter(direction == "dw", comparison == "3M.vs.BL") %>% dplyr::pull(gene_symbol)
-      )})
+    if (nrow(selected_tab) == 0) { next }
 
-    # Number of identified genes
-    comb_mat <- gene_set_list %>% list_to_matrix() %>% make_comb_mat()
-    gene_upset_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, pct, "timepoint_comparison.upset_plot.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
-    pdf(gene_upset_save_to, width = 6, height = 3.25)
-    UpSet(comb_mat) %>% draw()
-    dev.off()
+    tryCatch({
+      gene_set_list <- selected_tab %>%
+        (function(tab) {
+          list(
+            `6W.vs.BL (up)` = tab %>% dplyr::filter(direction == "up", comparison == "6W.vs.BL") %>% dplyr::pull(gene_symbol),
+            `3M.vs.6W (up)` = tab %>% dplyr::filter(direction == "up", comparison == "3M.vs.6W") %>% dplyr::pull(gene_symbol),
+            `3M.vs.BL (up)` = tab %>% dplyr::filter(direction == "up", comparison == "3M.vs.BL") %>% dplyr::pull(gene_symbol),
+            `6W.vs.BL (dw)` = tab %>% dplyr::filter(direction == "dw", comparison == "6W.vs.BL") %>% dplyr::pull(gene_symbol),
+            `3M.vs.6W (dw)` = tab %>% dplyr::filter(direction == "dw", comparison == "3M.vs.6W") %>% dplyr::pull(gene_symbol),
+            `3M.vs.BL (dw)` = tab %>% dplyr::filter(direction == "dw", comparison == "3M.vs.BL") %>% dplyr::pull(gene_symbol)
+        )})
 
-    # GO enrichment
-    go_tab_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, pct, "timepoint_comparison.go_enrichment.csv", sep = ".")) %>% stringr::str_remove_all(" ")
-    if (file.exists(go_tab_save_to)) {
-      cat(paste("Reading", go_tab_save_to, "...\n"))
-      go_tab <- fread(go_tab_save_to)
-    } else {
-      cat(paste("Calculating", go_tab_save_to, "...\n"))
-      go_tab <- lapply(names(gene_set_list), function(x, .gsl) {
+      # GO enrichment
+      per_go_tab <- lapply(names(gene_set_list), function(x, .gsl) {
         gene_vec <- .gsl[[x]]
-        tmp <- enrichGO(
-          gene = gene_vec, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "ALL", pAdjustMethod = "BH", pvalueCutoff = 0.05,
-          qvalueCutoff = 0.05, readable = TRUE
-        )
+        tmp <- enrichGO(gene_vec, org.Hs.eg.db, "SYMBOL", "ALL")
         tmp@result %>% dplyr::mutate(gene_set = x, label = paste0(x, " (n=", length(gene_vec), ")"))
       }, .gsl = gene_set_list) %>%
         Reduce(rbind, .) %>%
         dplyr::mutate(bg_ratio_dec = lapply(.$BgRatio, function(x) eval(parse(text = x))) %>% unlist) %>%
         dplyr::mutate(gene_ratio_dec = lapply(.$GeneRatio, function(x) eval(parse(text = x))) %>% unlist) %>%
         dplyr::mutate(log2_odds_ratio = log2(gene_ratio_dec / bg_ratio_dec))
-      fwrite(go_tab, go_tab_save_to)
-    }
 
-    # GO plot
-    go_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, pct, "timepoint_comparison.go_enrichment.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
-    if (file.exists(go_plot_save_to)) {
-      cat("GO plot exists\n")
-    } else {
-      go_plot_tab <- go_tab %>%
-        dplyr::filter(ONTOLOGY %in% c("BP"), p.adjust < 0.05, Count >= 5, gene_set %in% names(gene_set_list)) %>%
-        dplyr::group_by(gene_set) %>%
-        dplyr::slice_min(order_by = p.adjust, n = 10) %>%
-        dplyr::ungroup() %>%
-        dplyr::mutate(gene_set = factor(gene_set, levels = names(gene_set_list))) %>%
-        dplyr::mutate(Short_Description = stringr::str_trunc(Description, 64)) %>%
-        dplyr::mutate(Short_Description = forcats::fct_reorder2(Short_Description, log10(p.adjust), gene_set))
-      p <- ggplot(go_plot_tab) +
-        geom_point(aes(x = gene_set, y = Short_Description, size = -log10(p.adjust), color = log2_odds_ratio)) +
-        scale_color_gradient(low = "gray90", high = "red") +
-        scale_size(range = c(1, 6)) +
-        labs(x = NULL, y = NULL, size = "-log10(p.adj)", color = "log2(OR)") +
-        theme_classic() +
-        theme(axis.text.y = element_text(size = 12), axis.text.x = element_text(angle = 45, hjust = 1, size = 12))
-      ggsave(go_plot_save_to, p, width = 8, height = 8)
-    }
+      go_tab <- rbind(go_tab, per_go_tab)
 
-    # GO terms similarity 
-    go_sim_plot_save_to <- file.path(proj_dir, "outputs/analysis/deg", paste("de_gene", per_omics, pct, "timepoint_comparison.go_sim_mat.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
-    if (file.exists(go_sim_plot_save_to)) {
-      cat("GO similarity plot exists\n")
-    } else {
-      go_sel_tab <- dplyr::filter(go_tab, p.adjust < 0.05, Count >= 5, ONTOLOGY == "BP") %>% dplyr::group_by(gene_set) %>% dplyr::slice_min(n = 30, order_by = p.adjust)
-      go_terms <- dplyr::pull(go_sel_tab, ID)
-      go_split <- dplyr::pull(go_sel_tab, gene_set)
-      go_sim_mat <- mgoSim(go_terms, go_terms, semData = hsGO, measure = "Rel", combine = NULL)
-      colnames(go_sim_mat) <- NULL
-      rownames(go_sim_mat) <- NULL
-      go_sim_mat[is.na(go_sim_mat)] <- 0
+      # # Number of identified genes
+      # gene_upset_save_to <- file.path(plot_dir, paste("de_gene", per_omics, pct, "timepoint_comparison.upset_plot.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
+      # if (file.exists(gene_upset_save_to)) {
+      #   cat("File", gene_upset_save_to, "exists. Skipping ...\n")
+      # } else {
+      #   comb_mat <- gene_set_list %>% list_to_matrix() %>% make_comb_mat()
+      #   pdf(gene_upset_save_to, width = 6, height = 3.25)
+      #   UpSet(comb_mat) %>% draw()
+      #   dev.off()
+      # }
 
-      col_fun <- colorRamp2(c(0, max(go_sim_mat)), c("gray95", "red"))
-      pdf(go_sim_plot_save_to, width = 8.5, height = 8)
-      Heatmap(go_sim_mat, column_split = go_split, row_split = go_split, col = col_fun)# , top_annotation = top_ann)
-      dev.off()
-    }
+      # # GO plot
+      # go_plot_save_to <- file.path(plot_dir, paste("de_gene", per_omics, pct, "timepoint_comparison.go_enrichment.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
+      # if (file.exists(go_plot_save_to)) {
+      #   cat("GO plot exists\n")
+      # } else {
+      #   go_plot_tab <- per_go_tab %>%
+      #     dplyr::filter(ONTOLOGY %in% c("BP"), p.adjust < 0.05, Count >= 5, gene_set %in% names(gene_set_list)) %>%
+      #     dplyr::group_by(gene_set) %>%
+      #     dplyr::slice_min(order_by = p.adjust, n = 10) %>%
+      #     dplyr::ungroup() %>%
+      #     dplyr::mutate(gene_set = factor(gene_set, levels = names(gene_set_list))) %>%
+      #     dplyr::mutate(Short_Description = stringr::str_trunc(Description, 64)) %>%
+      #     dplyr::mutate(Short_Description = forcats::fct_reorder2(Short_Description, log10(p.adjust), gene_set))
 
-  }, error = function(e) cat(e$message, paste(pct, "failed\n")) )
+      #   p <- ggplot(go_plot_tab) +
+      #     geom_point(aes(x = gene_set, y = Short_Description, size = -log10(p.adjust), color = log2_odds_ratio)) +
+      #     scale_color_gradient(low = "gray90", high = "red") +
+      #     scale_size(range = c(1, 6)) +
+      #     labs(x = NULL, y = NULL, size = "-log10(p.adj)", color = "log2(OR)") +
+      #     theme_classic() +
+      #     theme(axis.text.y = element_text(size = 12), axis.text.x = element_text(angle = 45, hjust = 1, size = 12))
+      #   ggsave(go_plot_save_to, p, width = 8, height = 8)
+      # }
+
+      # # GO terms similarity 
+      # go_sim_plot_save_to <- file.path(plot_dir, paste("de_gene", per_omics, pct, "timepoint_comparison.go_sim_mat.pdf", sep = ".")) %>% stringr::str_remove_all(" ")
+      # if (file.exists(go_sim_plot_save_to)) {
+      #   cat("GO similarity plot exists\n")
+      # } else {
+      #   go_sel_tab <- dplyr::filter(per_go_tab, p.adjust < 0.05, Count >= 5, ONTOLOGY == "BP") %>% dplyr::group_by(gene_set) %>% dplyr::slice_min(n = 30, order_by = p.adjust)
+      #   go_terms <- dplyr::pull(go_sel_tab, ID)
+      #   go_split <- dplyr::pull(go_sel_tab, gene_set)
+      #   go_sim_mat <- mgoSim(go_terms, go_terms, semData = hsGO, measure = "Rel", combine = NULL)
+      #   colnames(go_sim_mat) <- NULL
+      #   rownames(go_sim_mat) <- NULL
+      #   go_sim_mat[is.na(go_sim_mat)] <- 0
+
+      #   col_fun <- colorRamp2(c(0, max(go_sim_mat)), c("gray95", "red"))
+      #   pdf(go_sim_plot_save_to, width = 8.5, height = 8)
+      #   Heatmap(go_sim_mat, column_split = go_split, row_split = go_split, col = col_fun)# , top_annotation = top_ann)
+      #   dev.off()
+      # }
+    }, error = function(e) cat(e$message, paste(pct, "failed\n")))
+  }
+
+  fwrite(go_tab, go_tab_save_to)
 }
-
-
-# DE genes replicated by RNA-seq
-dis_deg_tab <- de_tab_all %>%
-  dplyr::filter(donors == "All", comparison == "Rs.vs.NRs_BL", data_source == "pml_citeseq", p_val_adj < 0.05, abs(avg_log2FC) > 0.25) %>%
-  dplyr::select(celltype, gene_symbol, direction, p_val, avg_log2FC)
-
-val_deg_tab <- de_tab_all %>%
-  dplyr::filter(donors == "All", comparison == "Rs.vs.NRs_BL", data_source == "pml_rnaseq", p_val < 0.05) %>%
-  dplyr::select(celltype, gene_symbol, direction, p_val, avg_log2FC)
-
-rep_count_tab <- dis_deg_tab %>%
-  dplyr::left_join(val_deg_tab, by = c("celltype", "gene_symbol", "direction"), suffix = c(".citeseq", ".rnaseq")) %>%
-  dplyr::mutate(is_replicated = (!is.na(p_val.rnaseq)) & (avg_log2FC.citeseq * avg_log2FC.rnaseq > 0)) %>%
-  dplyr::group_by(celltype, direction) %>%
-  dplyr::summarise(n = n(), n_rep = sum(is_replicated)) %>%
-  dplyr::ungroup() %>%
-  dplyr::mutate(celltype = forcats::fct_reorder(celltype, -n)) %>%
-  dplyr::mutate(direction = factor(direction, levels = c("up", "dw")), timepoint = "BL")
-
-p <- ggplot(rep_count_tab) +
-  geom_col(aes(x = celltype, y = n, group = direction), fill = "gray", width = 0.8, position = position_dodge2(width = 0.75, preserve = "single")) +
-  geom_col(aes(x = celltype, y = n_rep, fill = direction), width = 0.8, position = position_dodge2(width = 0.75, preserve = "single")) +
-  geom_text(aes(x = celltype, y = n_rep, label = n_rep, group = direction), position = position_dodge2(width = 0.75, preserve = "single"), vjust = -0.2) +
-  geom_text(aes(x = celltype, y = n, label = n, group = direction), position = position_dodge2(width = 0.75, preserve = "single"), vjust = -0.2) +
-  labs(x = NULL, y = NULL, fill = "Responder vs non-responder") +
-  scale_fill_npg() +
-  theme_classic() +
-  facet_wrap(~timepoint, nrow = 1, strip.position = "right") +
-  theme(legend.position = "top", axis.text.y = element_text(size = 8), axis.text.x = element_text(angle = 45, hjust = 1), strip.background = element_blank())
-save_to <- file.path(proj_dir, "outputs/analysis/deg/de_gene.replicated_at_BL.pdf")
-ggsave(save_to, plot = p, width = 4, height = 4.5)
-
-
-
-
-
-
-# sessionInfo()
-# R version 4.2.0 (2022-04-22)
-# Platform: x86_64-pc-linux-gnu (64-bit)                          
-# Running under: AlmaLinux 8.5 (Arctic Sphynx)                     
-#                                                                   
-# Matrix products: default                                                
-# BLAS:   /vol/projects/zzhang/tools/R/4.2.0/lib64/R/lib/libRblas.so
-# LAPACK: /vol/projects/zzhang/tools/R/4.2.0/lib64/R/lib/libRlapack.so    
-#                                                                     
-# locale:                                                         
-# [1] C                                                           
-#                                                                    
-# attached base packages:                                          
-# [1] stats4    grid      stats     graphics  grDevices utils     datasets
-# [8] methods   base                                             
-#                                                                 
-# other attached packages:                                           
-#  [1] org.Hs.eg.db_3.15.0   AnnotationDbi_1.58.0  IRanges_2.30.0   
-#  [4] S4Vectors_0.34.0      Biobase_2.56.0        BiocGenerics_0.42.0
-#  [7] clusterProfiler_4.4.4 circlize_0.4.15       GOSemSim_2.22.0
-# [10] ComplexHeatmap_2.12.1 enrichplot_1.16.1     GOplot_1.0.2    
-# [13] RColorBrewer_1.1-3    gridExtra_2.3         ggdendro_0.1.23
-# [16] gtools_3.9.4          ggVennDiagram_1.2.2   ggsankey_0.0.99999
-# [19] ggrepel_0.9.1         ggbreak_0.1.1         ggsci_2.9       
-# [22] sp_1.5-0              SeuratObject_4.1.0    Seurat_4.1.1        
-# [25] data.table_1.14.2     forcats_0.5.1         stringr_1.4.1
-# [28] dplyr_1.0.9           purrr_0.3.4           readr_2.1.2    
-# [31] tidyr_1.2.0           tibble_3.1.8          ggplot2_3.4.0    
-# [34] tidyverse_1.3.2                                            
-#                                                                
-# loaded via a namespace (and not attached):                     
-#   [1] utf8_1.2.2             reticulate_1.25        tidyselect_1.2.0
-#   [4] RSQLite_2.3.1          htmlwidgets_1.5.4      BiocParallel_1.30.3
-#   [7] Rtsne_0.16             scatterpie_0.1.7       munsell_0.5.0
-#  [10] codetools_0.2-18       ica_1.0-3              future_1.26.1        
-#  [13] miniUI_0.1.1.1         withr_2.5.0            spatstat.random_3.0-1
-#  [16] colorspace_2.0-3       progressr_0.10.1       ROCR_1.0-11      
-#  [19] tensor_1.5             DOSE_3.22.0            listenv_0.8.0   
-#  [22] GenomeInfoDbData_1.2.8 polyclip_1.10-0        farver_2.1.1   
-#  [25] bit64_4.0.5            downloader_0.4         treeio_1.20.1 
-#  [28] parallelly_1.32.0      vctrs_0.5.1            generics_0.1.3
-#  [31] doParallel_1.0.17      R6_2.5.1               GenomeInfoDb_1.35.15
-#  [34] clue_0.3-61            graphlayouts_0.8.0     RVenn_1.1.0 
-#  [37] fgsea_1.22.0           bitops_1.0-7           spatstat.utils_3.0-1
-#  [40] cachem_1.0.6           gridGraphics_0.5-1     assertthat_0.2.1
-#  [43] promises_1.2.0.1       scales_1.2.1           ggraph_2.0.5
-#  [46] googlesheets4_1.0.0    rgeos_0.5-9            gtable_0.3.0 
-#  [49] globals_0.15.1         goftest_1.2-3          tidygraph_1.2.1
-#  [52] rlang_1.0.6            GlobalOptions_0.1.2    splines_4.2.0
-#  [55] lazyeval_0.2.2         gargle_1.2.0           spatstat.geom_3.0-3
-#  [58] broom_1.0.0            reshape2_1.4.4         abind_1.4-5
-#  [61] modelr_0.1.8           backports_1.4.1        httpuv_1.6.5
-#  [64] qvalue_2.15.0          tools_4.2.0            ggplotify_0.1.0
-#  [67] ellipsis_0.3.2         spatstat.core_2.4-4    ggridges_0.5.3
-#  [70] Rcpp_1.0.10            plyr_1.8.7             zlibbioc_1.42.0
-#  [73] RCurl_1.98-1.10        rpart_4.1.16           deldir_1.0-6
-#  [76] GetoptLong_1.0.5       viridis_0.6.2          pbapply_1.5-0
-#  [79] cowplot_1.1.1          zoo_1.8-10             haven_2.5.0
-#  [82] cluster_2.1.3          fs_1.5.2               magrittr_2.0.3
-#  [85] scattermore_0.8        DO.db_2.9              lmtest_0.9-40
-#  [88] reprex_2.0.1           RANN_2.6.1             googledrive_2.0.0
-#  [91] fitdistrplus_1.1-8     matrixStats_0.62.0     hms_1.1.1
-#  [94] patchwork_1.1.1        mime_0.12              xtable_1.8-4
-#  [97] readxl_1.4.0           shape_1.4.6            compiler_4.2.0
-# [100] shadowtext_0.1.2       KernSmooth_2.23-20     crayon_1.5.1
-# [103] htmltools_0.5.3        ggfun_0.0.6            mgcv_1.8-40
-# [106] later_1.3.0            tzdb_0.3.0             aplot_0.1.6
-# [109] lubridate_1.8.0        DBI_1.1.3              tweenr_1.0.2
-# [112] dbplyr_2.2.1           MASS_7.3-56            Matrix_1.4-1
-# [115] cli_3.4.1              parallel_4.2.0         igraph_1.3.4
-# [118] pkgconfig_2.0.3        plotly_4.10.0          spatstat.sparse_3.0-0
-# [121] foreach_1.5.2          xml2_1.3.3             ggtree_3.4.1
-# [124] XVector_0.36.0         rvest_1.0.2            yulab.utils_0.0.5
-# [127] digest_0.6.29          sctransform_0.3.3      RcppAnnoy_0.0.19
-# [130] spatstat.data_3.0-0    Biostrings_2.64.0      fastmatch_1.1-3
-# [133] cellranger_1.1.0       leiden_0.4.2           tidytree_0.3.9
-# [136] uwot_0.1.14            shiny_1.7.2            rjson_0.2.21
-# [139] lifecycle_1.0.3        nlme_3.1-157           jsonlite_1.8.0
-# [142] viridisLite_0.4.0      fansi_1.0.3            pillar_1.8.1
-# [145] lattice_0.20-45        KEGGREST_1.36.3        fastmap_1.1.0
-# [148] httr_1.4.3             survival_3.3-1         GO.db_3.15.0
-# [151] glue_1.6.2             iterators_1.0.14       png_0.1-7
-# [154] bit_4.0.4              ggforce_0.3.3          stringi_1.7.8
-# [157] blob_1.2.3             memoise_2.0.1          ape_5.6-2
-# [160] irlba_2.3.5            future.apply_1.9.0
